@@ -644,6 +644,8 @@ All queries enter the query panel via `_prepare_query_panel()` (sends F4 to swit
 
 Function keys go through foreground sending by default (`PostMessage` cannot trigger window shortcuts), with `click_input()` + `GetForegroundWindow()` handle verification before sending to ensure the window is in the foreground. `background=True` means "the caller already activated the window" (e.g. `place_order()` step 1) and skips the redundant activation, saving `click_input()` + `sleep(0.3s)` ×2 (~0.6s) — but it first runs a handle-level foreground self-check (microseconds): if the window was switched away, the full activation flow runs before sending, so keys never go into the wrong window (measured: an F4 sent into the void left the query page wrong and tree-node clicks unregistered, adding ~1.5s of navigation retries).
 
+**Text input (order / captcha fields)**: double-click the box to focus + select all (user discovery 2026-10-11, native win32 center click) → single BACKSPACE clears + 2 insurance BACKSPACEs, with 0.1s+0.1s settle/drain windows between clear and typing to isolate the injection queue, then per-key typing (0.05s inter-key pause). Field mechanics measured: the code box takes at most 6 digits and a digit typed onto a full field wipes it keeping only the new digit; price/quantity boxes take at most 12 digits and drop the 13th+; in the custom shell controls {HOME}+{END} select-all does not work and each BACKSPACE deletes exactly one digit — the early WM_SETTEXT clear was always a no-op on shell controls and has been removed; the price box contains a decimal point where double-click word selection may split, so it keeps a fill-to-limit BACKSPACE fallback (`clear_backspaces` parameter, default 12). The captcha box skips the clear-verification readback (the popup input is empty by default; failure is cheap = retype + archive); shell fields always read back empty so verification is meaningless there — field correctness is guarded downstream by name linkage, the limit band and lot-size checks.
+
 ### Ctrl+C Double-Send Mechanism
 
 ```text
@@ -788,6 +790,7 @@ Current single-operation latency (latest full re-measure 2026-09-05, after cross
 - Message-based copy (`query.copy_method=message`): copy stage 5.5s→~1.2s, end-to-end trades 6.25s→3.20s, positions 8.35s→5.92s (2026-09-09 baseline; 2026-09-22 re-test positions ~3.5s, trades ~4.5s, both incl. captcha)
 - A single order dropped from ~13.7s (pre-optimization baseline) to the current level — techniques and per-step breakdown in [Control-Tree Caching](#control-tree-caching-and-performance) and [Query Flow Performance](#query-flow-performance)
 - Entrust-number recognition stress (2026-10-11, after the row-band + mean-metric fixes): 15 consecutive limit buys over full HTTP (capture + verify on) — 15/15 `confirmed` with `entrust_no_verified: true`, steady 15.1-15.3s per order; glue-prone contract numbers ("48"/"89" adjacent pairs) all read correctly
+- Input-path rework speedup (2026-10-11 evening: double-click select-all clear + native win32 double-click + settle/drain windows 0.25→0.1s + reconcile backoff 1/2/4→0.5/1/2s): alternating B/S stress, 6 orders end-to-end 19-23s → **11.7-12.5s**; place_order task 11.23→9.49s (quantity/price fills 3.0→2.4s, captcha solve 2.8→1.06s)
 
 ## Known Limitations
 

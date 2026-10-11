@@ -44,6 +44,15 @@ class PositionService:
     # 仍在 40s 客户端推荐超时内）；若 verified:false 回归再回调
     _ENTRUST_REFRESH_WAITS = (0.5, 1.0, 2.0)
 
+    # 验证码弹窗预测路径：主窗口→弹窗→图片控件的父链
+    # [(control_type, class_name, control_id), ...]，复制必然触发验证码，
+    # 此路径缓存把检测从全树遍历(~0.8s/次)降到逐跳 children() 解析(~10-50ms)。
+    # 类级缓存：PositionService 按请求实例化（query_routes/order_routes 每次
+    # new），实例级缓存活不过请求生命周期——预测路径从未跨请求生效过
+    # （2026-10-11 实测连续 3 查均回落子对话框扫描后定位）
+    _captcha_path_cache = None
+    _captcha_path_root_handle = None
+
     def __init__(self, window_service: WindowService, ocr_service=None):
         self.window_service = window_service
         self.ocr_service = ocr_service  # 注入 OCR 服务（避免循环依赖）
@@ -52,11 +61,6 @@ class PositionService:
         self._cached_window = None   # 用于窗口引用刷新
         self._captcha_window = None  # 验证码弹窗引用（可能是独立顶层窗口）
         self._cached_grid_hwnd = None  # 表格控件句柄（消息级复制用，导航时顺带缓存）
-        # 验证码弹窗预测路径：主窗口→弹窗→图片控件的父链
-        # [(control_type, class_name, control_id), ...]，复制必然触发验证码，
-        # 此路径缓存把检测从全树遍历(~0.8s/次)降到逐跳 children() 解析(~10-50ms)
-        self._captcha_path_cache = None
-        self._captcha_path_root_handle = None
 
     def _focus_grid_for_copy(self) -> None:
         """复制前置：把键盘焦点交给当前查询表格（keyboard 路径专用）
@@ -455,6 +459,12 @@ class PositionService:
                 for scan in range(3):
                     if scan > 0:
                         time.sleep(0.3)
+                    # 快检先行:直接在缓存窗口引用上走预测路径(~10-50ms)——
+                    # 主窗口引用极少失效,命中即免去 _refresh_window_ref 的
+                    # UIA 枚举;引用失效/路径失效由下方全量扫描兜底
+                    if self._detect_captcha_cached(self._cached_window):
+                        captcha_found = True
+                        break
                     self._refresh_window_ref()
                     if self._detect_captcha_full(self._cached_window):
                         captcha_found = True
@@ -567,39 +577,65 @@ class PositionService:
             hops.reverse()
             # hops[0] 是主窗口自身，解析时直接从主窗口出发，无需该跳
             if len(hops) > 1:
-                self._captcha_path_cache = hops[1:]
-                self._captcha_path_root_handle = root_handle
-                self.logger.info("已记录验证码弹窗路径（下次检测走预测路径）")
+                # 类级写入：跨请求实例共享（见类属性处注释）
+                type(self)._captcha_path_cache = hops[1:]
+                type(self)._captcha_path_root_handle = root_handle
+                self.logger.info(
+                    f"已记录验证码弹窗路径（下次检测走预测路径）: "
+                    f"{self._captcha_path_cache}")
         except Exception:
             pass
 
     def _resolve_captcha_image_via_path(self, window):
         """按缓存路径逐跳解析验证码图片控件（免全树遍历，~10-50ms）
 
-        任一跳匹配失败（弹窗结构变化/控件已销毁）即返回 None，交由上层走
-        顶层快检→全树扫描兜底。
+        同级存在多个同 (类型,类名,cid) 兄弟时带回溯逐分支匹配——弹窗对话框
+        类名多为 #32770 且 cid 恒 0，首匹配会走进错误分支导致预测恒脱靶
+        （2026-10-11 实测：连续两次弹窗都落到子对话框定向扫描）。任一跳
+        全分支失败即返回 None，交由上层走顶层快检→子对话框扫描→全树兜底。
         """
         if (not self._captcha_path_cache
                 or self._captcha_path_root_handle != window.handle):
+            if self._captcha_path_cache and window is not None:
+                self.logger.info(
+                    f"预测路径根句柄不符: 记录时 {self._captcha_path_root_handle},"
+                    f"当前 {getattr(window, 'handle', None)}")
             return None
+
+        def _hop_ok(el, control_type, class_name, control_id):
+            try:
+                return (el.control_id() == control_id
+                        and el.class_name() == class_name
+                        and safe_control_type(el) == control_type)
+            except Exception:
+                return False
+
+        def _walk(el, hops):
+            if not hops:
+                return el
+            control_type, class_name, control_id = hops[0]
+            try:
+                candidates = [c for c in el.children()
+                              if _hop_ok(c, control_type, class_name, control_id)]
+            except Exception as e:
+                self.logger.info(f"预测路径遍历异常(第 "
+                                 f"{len(self._captcha_path_cache) - len(hops) + 1} 跳): {e}")
+                return None
+            if not candidates:
+                self.logger.info(
+                    f"预测路径第 {len(self._captcha_path_cache) - len(hops) + 1} 跳"
+                    f"未命中: 期望 ({control_type},{class_name},{control_id}),"
+                    f"实际子级 {[(safe_control_type(c), c.class_name(), c.control_id()) for c in el.children()][:8]}")
+            for cand in candidates:
+                found = _walk(cand, hops[1:])
+                if found is not None:
+                    return found
+            return None
+
         try:
-            el = window
-            for control_type, class_name, control_id in self._captcha_path_cache:
-                nxt = None
-                for child in el.children():
-                    try:
-                        if (child.control_id() == control_id
-                                and child.class_name() == class_name
-                                and safe_control_type(child) == control_type):
-                            nxt = child
-                            break
-                    except Exception:
-                        continue
-                if nxt is None:
-                    return None
-                el = nxt
-            return el
-        except Exception:
+            return _walk(window, list(self._captcha_path_cache))
+        except Exception as e:
+            self.logger.info(f"预测路径解析异常: {e}")
             return None
 
     @staticmethod
@@ -650,6 +686,27 @@ class PositionService:
         # 顶层窗口快检
         if self._detect_captcha(window):
             return True
+
+        # 子对话框定向扫描：验证码弹窗是主窗口直接子级（~20 控件），逐对话
+        # 框找 2405 ~0.1s，远快于主窗口全树 descendants（~0.8s）；非直接
+        # 子级的弹窗变体由末级全树扫描兜底
+        if window is not None:
+            try:
+                for child in window.children():
+                    try:
+                        image = self.window_service.find_element_in_window(
+                            child, CAPTCHA_IMAGE_ID)
+                    except Exception:
+                        image = None
+                    if image is not None:
+                        self.logger.info("通过子对话框定向扫描检测到验证码弹窗")
+                        self._record_captcha_path(image)
+                        self._captcha_window = (
+                            self._captcha_dialog_from_image(image, window) or child
+                        )
+                        return True
+            except Exception:
+                pass
 
         # 兜底：主窗口子孙控件扫描
         if window is None:

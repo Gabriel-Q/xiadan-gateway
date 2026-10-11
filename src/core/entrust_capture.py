@@ -22,6 +22,7 @@
 注意: 横幅号即客户端提交时显示的合同编号；极端情况（券商服务器
 维护窗口）下与最终落表号可能不一致，关键操作前应以当日委托查询复核。
 """
+import glob
 import os
 import threading
 import time
@@ -34,6 +35,12 @@ from src.core.banner_ocr import BannerDigitOCR
 from src.utils.logger import Logger
 
 ENTRUST_LEN_MIN = 8
+
+# 条带截图留痕目录与保留张数。logs/ 已 gitignore 不入库；无论读数成败
+# 都落盘——2026-10-11 实测读数「成功」的 11 位坏号因长度过检直接采信，
+# 读数失败的样本有存、读数成功的误读反而无档可查
+BAND_SAMPLE_DIR = os.path.join("logs", "banner_samples")
+BAND_SAMPLE_KEEP = 5
 
 # 横幅黄色掩码阈值（黄底红字，采样自模拟盘实测截图）
 _YELLOW_R, _YELLOW_G, _YELLOW_B = 200, 180, 120
@@ -150,20 +157,35 @@ class EntrustNoCapture:
         band = np.asarray(img.crop((int(cols.min()), int(rows.min()),
                                     int(cols.max()) + 1, int(rows.max()) + 1)))
         digits, _conf = self._ocr.read_digits(band)
-        if len(digits) >= ENTRUST_LEN_MIN:
-            return digits
-        # 条带可见但读数不足：留存样本供排查（每次下单最多存 1 张）
+        # 无论读数成败都留痕（每单 1 张，滚动保留最近 5 张）
         if not self._band_dumped:
             self._band_dumped = True
-            try:
-                from PIL import Image
-                os.makedirs("logs/banner_samples", exist_ok=True)
-                path = os.path.join(
-                    "logs/banner_samples",
-                    f"unreadable_{time.strftime('%H%M%S')}.png")
-                Image.fromarray(band).save(path)
-                self.logger.info(
-                    f"横幅可见但读数不足（{len(digits)} 位），已存样 {path}")
-            except Exception:
-                pass
+            self._persist_band(band, digits)
+        if len(digits) >= ENTRUST_LEN_MIN:
+            return digits
+        self.logger.info(f"横幅可见但读数不足（{len(digits)} 位）")
         return None
+
+    def _persist_band(self, band, digits: str) -> None:
+        """条带截图落盘 + 滚动清理，只保留最近 BAND_SAMPLE_KEEP 张。
+
+        文件名带读数结果（band_HHMMSS_<读数>.png，空读数为 none），便于
+        与 app.log 的「横幅截获委托号」行及对账结果逐单对照。落盘/清理
+        失败绝不影响截获主流程。
+        """
+        try:
+            from PIL import Image
+            os.makedirs(BAND_SAMPLE_DIR, exist_ok=True)
+            Image.fromarray(band).save(os.path.join(
+                BAND_SAMPLE_DIR,
+                f"band_{time.strftime('%H%M%S')}_{digits or 'none'}.png"))
+            bands = sorted(
+                glob.glob(os.path.join(BAND_SAMPLE_DIR, "band_*.png")),
+                key=os.path.getmtime)
+            for old in bands[:-BAND_SAMPLE_KEEP]:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+        except Exception as e:
+            self.logger.debug(f"条带截图留痕失败（不影响截获）: {e}")

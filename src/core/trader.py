@@ -239,7 +239,7 @@ class Trader:
         with timed("填写股票代码", self.logger):
             self.window_service.input_text_to_element(
                 window, CONTROL_ID_CODE, code, descendants=_descendants, delay=0.1,
-                clear_backspaces=8)
+                clear_backspaces=8, double_click_clear=True)
             self._verify_code_accepted(window, _descendants, code)
             # 轮询等待券商自动填充价格（多数 <0.1s），替代固定 sleep(0.3)
             try:
@@ -299,7 +299,8 @@ class Trader:
         if amount:
             with timed("填写数量", self.logger):
                 self.window_service.input_text_to_element(
-                    window, CONTROL_ID_AMOUNT, amount, descendants=_descendants, delay=0.05)
+                    window, CONTROL_ID_AMOUNT, amount, descendants=_descendants, delay=0.05,
+                    double_click_clear=True)
                 time.sleep(0.05)
 
         # 5b. 阶段 2/2：验证模式切换（填数量期间已自然等待 ~0.7s，切换早已完成）
@@ -323,7 +324,8 @@ class Trader:
         if price_type == "limit" and price:
             with timed("填写价格", self.logger):
                 self.window_service.input_text_to_element(
-                    window, CONTROL_ID_PRICE, price, descendants=_descendants, delay=0.05)
+                    window, CONTROL_ID_PRICE, price, descendants=_descendants, delay=0.05,
+                    double_click_clear=True)
                 time.sleep(0.05)
 
         # 8. 点击下单按钮并处理弹窗
@@ -670,7 +672,8 @@ class Trader:
                         f"清空重输一次")
                     self.window_service.input_text_to_element(
                         window, CONTROL_ID_CODE, code,
-                        descendants=descendants, delay=0.1, clear_backspaces=8)
+                        descendants=descendants, delay=0.1, clear_backspaces=8,
+                        double_click_clear=True)
                     # 重输后重新获取 1036 引用（防 UIA 引用失效）
                     name_el = self.window_service.find_element_in_window(
                         window, CONTROL_ID_STOCK_NAME)

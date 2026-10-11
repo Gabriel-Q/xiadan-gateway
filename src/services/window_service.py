@@ -678,14 +678,19 @@ class WindowService(Singleton):
                 time.sleep(delay)
 
     def input_text_to_element(self, window, control_id, text: str, delay: float = 0.3,
-                              descendants=None, clear_backspaces: int = 12) -> bool:
+                              descendants=None, clear_backspaces: int = 12,
+                              double_click_clear: bool = False) -> bool:
         """向输入框输入文本（先清空已有内容，再输入新内容）
 
-        清空策略（2026-10-11 起仅击键段，按字段最大位数补足 BACKSPACE）：
-        1. {HOME}+{END}（对真 Edit 有效）+ clear_backspaces 个 BACKSPACE
-           ——自绘壳控件里 {HOME}+{END} 全选无效（实测每个 BACKSPACE 只删
-           1 位：残留"12345"三次清除仅剩"12"），必须按上限删满
-        2. 验证：若券商自动填充重新出现，再清一次
+        清空策略（2026-10-11 起仅击键段）：
+        - double_click_clear=True（纯数字字段：代码/数量/验证码）：双击输入
+          框自动全选全部文本（2026-10-11 用户发现），单 BACKSPACE 即准确
+          清空；再补 2 个 BACKSPACE 防全选只覆盖词段
+        - 否则（含小数点的价格框）：{HOME}+{END} + clear_backspaces 个
+          BACKSPACE——自绘壳控件里全选无效（实测每个 BACKSPACE 只删 1 位：
+          残留"12345"三次清除仅剩"12"），必须按上限删满；价格内容含小数
+          点，双击选词会在"."处断开残留前段，错价是静默风险不走此捷径
+        - 验证：若券商自动填充重新出现，再清一次（可读回字段）
         （原 WM_SETTEXT 置空对自绘壳控件是空操作，已移除——见方法内注释）
         控件位数上限（2026-10-11 用户实测）：代码框最长 6 位且满位后再输
         入会清空仅留新数字；价格/数量框最长 12 位，第 13 位起丢弃。
@@ -709,27 +714,35 @@ class WindowService(Singleton):
             # 价格/数量击键凭空消失），而真实鼠标点击始终可靠——与复制
             # 路径的 _focus_grid_for_copy 同一原理：定向点击替代盲聚焦
             try:
-                element.click_input()
+                if double_click_clear:
+                    element.double_click_input()  # 聚焦+全选一步完成
+                else:
+                    element.click_input()
                 time.sleep(0.08)
+                dc_done = double_click_clear
             except Exception:
                 element.set_focus()
                 time.sleep(0.08)
+                dc_done = False  # 双击失败→降级走按上限 BACKSPACE 路径
 
-            # 清空：仅击键段（{HOME}+{END}{BACKSPACE} = Home→Shift+End
-            # 全选→删除；比 ^a{BACKSPACE}（Ctrl+A）更可靠，某些控件不支持
-            # Ctrl+A）。注意用模块级 SendKeys 而非 element.type_keys——后者
-            # 内部会再调一次 UIA set_focus，退化会话下静默失败会丢掉点击
-            # 刚放好的字段焦点（2026-10-10 服务器实测复发）。
+            # 清空：仅击键段。注意用模块级 SendKeys 而非 element.type_keys
+            # ——后者内部会再调一次 UIA set_focus，退化会话下静默失败会
+            # 丢掉点击刚放好的字段焦点（2026-10-10 服务器实测复发）。
             # 原「方案一 WM_SETTEXT 置空」已移除（2026-10-11）：对代码/
             # 价格/数量这类自绘壳控件它是空操作——可见数字活在客户端内部
             # 缓冲，Win32 文本层恒空，写的只是那个空层（当日卖出页残留
             # 2 位数字击穿首清实测）；对可读回字段（验证码 2404）击键清空
             # 同样有效且本就有读回校验+二次清除兜底。
-            # 追加按上限补足的 BACKSPACE：自绘壳控件里 {HOME}+{END} 全选
-            # 无效、每个 BACKSPACE 只删 1 位（2026-10-11 用户目击「123 一个
-            # 一个删除」「12345 没删干净剩 2 位」），删满上限才保证清空；
-            # 空字段上为空操作，零副作用
-            _keyboard_send("{HOME}+{END}" + "{BACKSPACE}" * clear_backspaces)
+            if dc_done:
+                # 双击已全选（2026-10-11 用户发现：双击自动全选全部文本）
+                # → 单 BS 即准确清空；再补 2 个 BS 防全选只覆盖词段
+                # （空字段/全删后均为空操作，零副作用）
+                _keyboard_send("{BACKSPACE}{BACKSPACE}{BACKSPACE}")
+            else:
+                # {HOME}+{END}+按上限补足 BACKSPACE——自绘壳控件里全选
+                # 无效（实测每个 BACKSPACE 只删 1 位：残留"12345"三次
+                # 清除仅剩"12"），必须按上限删满
+                _keyboard_send("{HOME}+{END}" + "{BACKSPACE}" * clear_backspaces)
             # 清空落定 0.25s：让击键清空在读回校验前落定、给券商自动回写
             # 留出现身时间（回写晚于窗口会被漏掉，残底+验证码叠加=错码）；
             # 客户端繁忙时注入排干可超 0.15s（2026-10-11 滞留键事故同源），

@@ -94,7 +94,7 @@ class PositionService:
             time.sleep(0.05)
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            time.sleep(0.1)
+            time.sleep(0.05)
             self.logger.info(f"已单击查询表格聚焦: {hwnd:#x} @ ({x},{y})")
         except Exception as e:
             self.logger.warning(f"聚焦查询表格失败（继续发送 Ctrl+C）: {e}")
@@ -145,12 +145,12 @@ class PositionService:
             # 「买入/卖出数量」框（2026-10-10 数量被置 100 事故）
             try:
                 win32gui.SetForegroundWindow(target_handle)
-                time.sleep(0.15)
+                time.sleep(0.05)
             except Exception:
                 pass
             self.window_service.ensure_foreground(
                 window, purpose="查询前置激活（Ctrl+C 复制）")
-            time.sleep(0.15)
+            time.sleep(0.1)
 
         if win32gui.GetForegroundWindow() != target_handle:
             # 激活失败常见原因: 上次异常退出残留的空标题 #32770 对话框
@@ -197,7 +197,7 @@ class PositionService:
             time.sleep(0.15)
             # 第二次：真正送达券商软件
             _send_one()
-            time.sleep(0.3)
+            time.sleep(0.15)
 
     @staticmethod
     def _is_table_matching(rows: list, required_columns: set,
@@ -466,7 +466,7 @@ class PositionService:
                 captcha_found = False
                 for scan in range(3):
                     if scan > 0:
-                        time.sleep(0.3)
+                        time.sleep(0.15)
                     # 快检先行:直接在缓存窗口引用上走预测路径(~10-50ms)——
                     # 主窗口引用极少失效,命中即免去 _refresh_window_ref 的
                     # UIA 枚举;引用失效/路径失效由下方全量扫描兜底
@@ -919,7 +919,7 @@ class PositionService:
         self.window_service.send_key("F5", background=True)
         from src.services.broker_link import mark_f5_sent
         mark_f5_sent()
-        time.sleep(0.8)  # 等券商服务器重新返回列表（同 F5 重查模式）
+        time.sleep(0.5)  # 等券商服务器重新返回列表（同 F5 重查模式；0.8→0.5 压缩实测）
 
     # ------------------------------------------------------------
     # 资金余额（control_id 批量读取，无需 OCR）

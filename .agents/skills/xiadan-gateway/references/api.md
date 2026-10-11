@@ -119,7 +119,8 @@ CLI 子命令与 HTTP 端点一一对应；本文供需要理解响应字段全�
 `INSUFFICIENT_SHARES`/`INSUFFICIENT_BALANCE` 份额/资金不足；
 `SHORT_SELLING_FORBIDDEN` 不允许卖空；`PRICE_OUT_OF_RANGE` 价格超涨跌停；
 `ORDER_PRICE_REQUIRED` 券商要求显式价格（改限价）；`SERVER_UNAVAILABLE` 券商
-服务器不可用；`BROKER_DISCONNECTED` 客户端与券商主站链路断开——查询结果为
+服务器不可用（含下单前置门控：可买(股)数据为空=行情/资金通道未就绪，不提交，
+2026-10-11 落地）；`BROKER_DISCONNECTED` 客户端与券商主站链路断开——查询结果为
 缓存旧值已**作废**，直接重试即可（每次调用前置 F5 自动触发重连，实测网络恢复
 后 ~0.9s 自愈；真实断网后有 ~25-45s 心跳盲区）；`OCR_FAILED` 验证码识别失败；`INPUT_VERIFY_FAILED` 证券名称联动
 校验失败；`INTERNAL_ERROR` 未知异常；`QUEUE_TIMEOUT` 排队超时（任务稍后仍可能

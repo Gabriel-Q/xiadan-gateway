@@ -104,6 +104,77 @@ class Trader:
         # 标签自动被收录，无需人工补 _ui_labels 硬编码清单
         self._ui_text_baseline: Optional[set] = None
 
+    # F1/F2 页字段引用缓存：代码/名称/数量/价格/提交/价格模式/可买卖标签与
+    # 数值均为页上固定 cid 控件（会话内稳定），按（根句柄，页别）类级缓存后，
+    # 下单主遍历（~0.6-0.9s）免掉——即"F1/F2 切换→输入代码"的间隔。UI 文本
+    # 基线（弹窗黑名单）同缘由缓存。类级原因同 PositionService/TradingService
+    # （按任务实例化）。代码名称联动是落点信号：联动失败即作废该页缓存，
+    # 重输走全遍历新鲜引用。
+    _field_cache = None        # {(root_handle, page): {cid: element}}
+    _ui_baseline_cache = None  # {root_handle: set(可见文本)}
+
+    _FIELD_CACHE_CIDS = (
+        CONTROL_ID_CODE, CONTROL_ID_STOCK_NAME, CONTROL_ID_AMOUNT,
+        CONTROL_ID_PRICE, CONTROL_ID_SUBMIT, CONTROL_ID_PRICE_TYPE,
+        CONTROL_ID_BUYABLE_LABEL, CONTROL_ID_BUYABLE, CONTROL_ID_SELLABLE,
+    )
+
+    def _field_cache_lookup(self, window, page: str):
+        """字段缓存查询：字段齐且全部存活（rectangle 可读）才命中
+
+        存活探针 ~1ms/个：元素销毁（F1/F2 重建表单等）在此暴露并作废缓存，
+        免得键入落进隐藏控件。任一失效返回 None，由全遍历路径重录。
+        """
+        cached = (Trader._field_cache or {}).get((window.handle, page))
+        if not cached:
+            return None
+        try:
+            for el in cached.values():
+                el.rectangle()
+        except Exception:
+            self._field_cache_invalidate(window)
+            return None
+        return cached
+
+    def _field_cache_store(self, window, page: str, descendants) -> None:
+        """字段缓存写入：单趟扫描收集固定 cid 控件 + 文本基线快照
+
+        页面结构异常（命中字段 <5，如停错页）不缓存，防止毒化后续订单。
+        """
+        try:
+            wanted = set(self._FIELD_CACHE_CIDS)
+            fields = {}
+            for el in descendants:
+                try:
+                    cid = el.control_id()
+                except Exception:
+                    continue
+                if cid in wanted and cid not in fields:
+                    fields[cid] = el
+            if len(fields) < 5:
+                self.logger.warning(
+                    f"字段缓存放弃写入（仅命中 {len(fields)} 个控件，"
+                    f"疑似非 {page} 下单页）")
+                return
+            if Trader._field_cache is None:
+                Trader._field_cache = {}
+            if Trader._ui_baseline_cache is None:
+                Trader._ui_baseline_cache = {}
+            Trader._field_cache[(window.handle, page)] = fields
+            if self._ui_text_baseline:
+                Trader._ui_baseline_cache[window.handle] = self._ui_text_baseline
+        except Exception:
+            pass
+
+    def _field_cache_invalidate(self, window) -> None:
+        """作废该根句柄下的全部页缓存（联动失败/元素失效时调用）"""
+        if Trader._field_cache:
+            for key in [k for k in Trader._field_cache if k[0] == window.handle]:
+                Trader._field_cache.pop(key, None)
+        if Trader._ui_baseline_cache:
+            Trader._ui_baseline_cache.pop(window.handle, None)
+        self._ui_text_baseline = None
+
     @report_window_state
     @escalate_unknown_order_state
     def place_order(
@@ -226,11 +297,24 @@ class Trader:
                 ErrorCode.WINDOW_NOT_FOUND, "未找到交易窗口 '网上股票交易系统5.0'",
                 suggestion="请确认券商程序已启动且窗口可见，或调用 /diagnostic/snapshot 排查"
             )
-        _descendants = list(window.descendants())
-        # 安静态 UI 文本快照：此刻（重置后/连续跳过的干净退出后）无弹窗，
-        # 主窗口全部可见文本即 UI 装饰标签全集。搭既有遍历的便车，零额外
-        # 遍历成本；兜底弹窗提取时用作动态黑名单（见 _extract_popup_error_text）
-        self._ui_text_baseline = self._snapshot_ui_texts(_descendants)
+        page_key = "F1" if status == "1" else "F2"
+        cached_fields = self._field_cache_lookup(window, page_key)
+        if cached_fields is not None:
+            # 快路径：字段引用全部存活，免全树遍历——"F1/F2 切换→输入代码"
+            # 的 ~0.9s 间隔压到 ~0.05s；文本基线复用会话级缓存。九个固定
+            # 控件的迷你列表供下游 find/click 复用；挡路弹窗扫描在快路径
+            # 省略（前置 ESC×5 已清场，联动验证兜底）
+            _descendants = list(cached_fields.values())
+            if self._ui_text_baseline is None:
+                self._ui_text_baseline = (Trader._ui_baseline_cache or {}).get(
+                    window.handle)
+        else:
+            _descendants = list(window.descendants())
+            # 安静态 UI 文本快照：此刻（重置后/连续跳过的干净退出后）无弹窗，
+            # 主窗口全部可见文本即 UI 装饰标签全集。搭既有遍历的便车，零额外
+            # 遍历成本；兜底弹窗提取时用作动态黑名单（见 _extract_popup_error_text）
+            self._ui_text_baseline = self._snapshot_ui_texts(_descendants)
+            self._field_cache_store(window, page_key, _descendants)
 
         # 4. 填写股票代码（必须先填代码，否则价格模式切换可能被禁用）
         # 注意：代码输入框(1032)是券商自绘壳控件，window_text() 回读恒空，
@@ -676,9 +760,12 @@ class Trader:
                     self.logger.warning(
                         f"代码输入校验失败（名称未联动，期望代码 {code}），"
                         f"清空重输一次")
+                    # 联动失败=代码可能落进失效/隐藏字段：作废字段缓存，
+                    # 重输走全遍历新鲜引用（而非沿用可能已陈旧的迷你列表）
+                    self._field_cache_invalidate(window)
                     self.window_service.input_text_to_element(
                         window, CONTROL_ID_CODE, code,
-                        descendants=descendants, delay=0.1, clear_backspaces=8,
+                        descendants=None, delay=0.1, clear_backspaces=8,
                         double_click_clear=True, verify_clear=False)
                     # 重输后重新获取 1036 引用（防 UIA 引用失效）
                     name_el = self.window_service.find_element_in_window(

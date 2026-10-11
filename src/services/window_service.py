@@ -21,16 +21,19 @@ from src.utils.poll import timed
 from src.utils.singleton import Singleton
 
 
-def _keyboard_send(keys: str) -> None:
+def _keyboard_send(keys: str, pause: float = 0.08) -> None:
     """向当前键盘焦点控件发送按键（绝不触碰焦点）
 
     必须用 pywinauto 模块级 SendKeys 而非 HwndWrapper.type_keys——后者
     内部先调 UIA set_focus，退化会话下静默失败会把点击刚放好的字段
     焦点丢掉，击键落空（2026-10-10 服务器实测）。调用方负责先聚焦
-    （click_input 真实点击）。
+    （click_input 真实点击）。pause=键间节流（默认 0.08s：客户端繁忙
+    时 0.05 默认值会让击键在消息队列里积压错位——2026-10-11 用户目击
+    「先输入代码→清空→又输入剩余代码」：上一批滞留键跨清空边界落地，
+    字段成残码、名称联动必败）。
     """
     from pywinauto import keyboard
-    keyboard.SendKeys(keys)
+    keyboard.SendKeys(keys, pause=pause)
 from src.utils.uia import safe_control_type, safe_text
 
 
@@ -738,6 +741,11 @@ class WindowService(Singleton):
                     time.sleep(0.1)
             except Exception:
                 pass
+
+            # 清空→键入之间强制排干注入队列：滞留击键（上一批/清空段的
+            # BACKSPACE 等）跨此边界落地会造成「残码+部分码」——壳控件
+            # 回读恒空，无法读回校验，只能以固定排干窗隔离两段
+            time.sleep(0.25)
 
             _keyboard_send(text)
             self.logger.info(

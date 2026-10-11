@@ -16,7 +16,7 @@ from src.api.task_queue import TaskQueue, report_window_state
 from src.constants import (
     CONTROL_ID_CODE, CONTROL_ID_PRICE, CONTROL_ID_AMOUNT,
     CONTROL_ID_SUBMIT, CONTROL_ID_PRICE_TYPE, CONTROL_ID_STOCK_NAME,
-    CONTROL_ID_BUYABLE, CONTROL_ID_BUYABLE_LABEL,
+    CONTROL_ID_BUYABLE, CONTROL_ID_SELLABLE, CONTROL_ID_BUYABLE_LABEL,
     CONFIRM_DIALOG_TITLE_ID, CONFIRM_YES_BUTTON_ID,
     CONFIRM_NO_BUTTON_ID, CONFIRM_DETAIL_TEXT_ID,
     CANCEL_CONFIRM_TEXT_ID,
@@ -270,15 +270,17 @@ class Trader:
                         raise ApiError(ErrorCode.WINDOW_NOT_FOUND, "关闭弹窗后交易窗口消失")
                     _descendants = list(window.descendants())
 
-        # 4.2 券商服务就绪门控：读「可买(股)」——该值由行情/资金通道填充，
-        # 空=通道未就绪，提交只会被拒（2026-10-11 重启后实测：盘口无数据
-        # 期间 15 连败「不存在该证券」）。仅空串拦截；控件缺失/读取异常
-        # 一律放行（fail-open，与 broker_link 同哲学）；"0" 不拦——资金
-        # 不足走既有 INSUFFICIENT_BALANCE 服务端语义。
-        # 开关 order.verify_buyable_ready（默认开）
+        # 4.2 券商服务就绪门控：读「可买/可卖」数值——该值由行情/资金通道
+        # 填充，空=通道未就绪，提交只会被拒（2026-10-11 重启后实测：盘口无
+        # 数据期间 15 连败「不存在该证券」）。仅空串拦截；控件缺失/读取异常
+        # 一律放行（fail-open，与 broker_link 同哲学）；"0" 不拦——资金/
+        # 持仓不足走既有服务端语义。开关 order.verify_buyable_ready（默认开）
         if self.config.get_order_config().get("verify_buyable_ready", True):
-            with timed("可买就绪门控", self.logger):
-                self._verify_buyable_ready(window, _descendants)
+            _ready_cid = CONTROL_ID_BUYABLE if status == "1" else CONTROL_ID_SELLABLE
+            _ready_field = "可买" if status == "1" else "可卖"
+            with timed("可买/可卖就绪门控", self.logger):
+                self._verify_buyable_ready(window, _descendants,
+                                           _ready_cid, _ready_field)
 
         # 5. 确保价格模式匹配
         # 策略：模式不匹配时先点击切换按钮（不等待），立即进入填数量——数量填充的
@@ -690,24 +692,26 @@ class Trader:
                      "name_text": actual},
         )
 
-    def _verify_buyable_ready(self, window, descendants) -> None:
-        """「可买(股)」就绪门控：空=行情/资金通道未就绪 → SERVER_UNAVAILABLE
+    def _verify_buyable_ready(self, window, descendants, value_cid: int,
+                              field: str = "可买") -> None:
+        """「可买/可卖」就绪门控：空=行情/资金通道未就绪 → SERVER_UNAVAILABLE
 
-        定位：标签（1401「可买(股)」）同行 ±8px 的 1018 Image——1018 全树
-        有撞号风险，锚定标签行保唯一。空串是唯一拦截条件；控件缺失/读取
-        异常放行（fail-open）；0 放行（资金不足由服务端既有语义兜底）。
+        定位：标签槽位（1401——买入页「可买(股)」/卖出页「可用余额」）同行
+        ±8px 的数值 Image（买入 1018 / 卖出 1038）——数值 cid 全树有撞号
+        风险，锚定标签行保唯一。空串是唯一拦截条件；控件缺失/读取异常放行
+        （fail-open）；0 放行（资金/持仓不足由服务端既有语义兜底）。
         """
         try:
             label = self.window_service.find_element_in_window(
                 window, CONTROL_ID_BUYABLE_LABEL, descendants=descendants)
             if label is None:
-                self.logger.warning("未找到可买(股)标签，就绪门控放行")
+                self.logger.warning(f"未找到{field}标签槽位(1401)，就绪门控放行")
                 return
             ltop = label.rectangle().top
             el = None
             for candidate in descendants:
                 try:
-                    if candidate.control_id() != CONTROL_ID_BUYABLE:
+                    if candidate.control_id() != value_cid:
                         continue
                     if abs(candidate.rectangle().top - ltop) <= 8:
                         el = candidate
@@ -715,23 +719,23 @@ class Trader:
                 except Exception:
                     continue
             if el is None:
-                self.logger.warning("未找到可买(股)数值控件，就绪门控放行")
+                self.logger.warning(f"未找到{field}数值控件(cid={value_cid})，就绪门控放行")
                 return
             text = (safe_text(el) or "").strip()
         except Exception as e:
-            self.logger.warning(f"可买(股)读取异常，就绪门控放行: {e}")
+            self.logger.warning(f"{field}读取异常，就绪门控放行: {e}")
             return
         if text:
-            self.logger.info(f"可买就绪门控通过: 可买={text}")
+            self.logger.info(f"{field}就绪门控通过: {field}={text}")
             return
         raise ApiError(
             ErrorCode.SERVER_UNAVAILABLE,
-            "「可买(股)」数据为空——券商行情/资金通道未就绪，此时提交将被"
-            "拒绝（实测「不存在该证券」），已取消本次提交",
+            f"「{field}」数据为空——券商行情/资金通道未就绪，此时提交将被"
+            f"拒绝（实测「不存在该证券」），已取消本次提交",
             suggestion=("等待券商服务就绪后重试（可先 GET /health 观察 "
                         "broker 状态）；若持续出现请检查券商服务器状态或"
                         "重新登录"),
-            details={"buyable": ""},
+            details={"field": field, "value_cid": value_cid},
         )
 
     def _click_price_type_toggle(self, window, descendants=None) -> None:

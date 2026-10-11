@@ -28,8 +28,12 @@ CONTROL_ID_STOCK_NAME = 1036  # 证券名称联动显示（Static）——代码
 CONTROL_ID_BUYABLE = 1018     # 可买(股)数值(Image)——由行情/资金通道填充，
                               # 空=通道未就绪（此时提交被拒「不存在该证券」，
                               # 2026-10-11 重启后实测 15 连败标定）
-CONTROL_ID_BUYABLE_LABEL = 1401  # 可买(股)标签(Static)——用于同行锚定
-                                 # 1018（全树撞号风险，见 trader 门控）
+CONTROL_ID_SELLABLE = 1038    # 卖出页同槽位数值(Image)——代码联动后显示持仓
+                              # 可卖余额（2026-10-11 实测 601991→2300），通道
+                              # 未就绪时同样为空；与 1018 共用 1401 标签槽位
+CONTROL_ID_BUYABLE_LABEL = 1401  # 两页共用标签槽位(Static)——买入页文本
+                                 # 「可买(股)」/卖出页「可用余额」——用于同行
+                                 # 锚定 1018/1038（全树撞号风险，见 trader 门控）
 
 # 委托确认弹窗控件
 CONFIRM_DIALOG_TITLE_ID = 1365  # "委托确认"标题 Image

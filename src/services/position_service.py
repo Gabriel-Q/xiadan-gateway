@@ -176,6 +176,16 @@ class PositionService:
         # 否则复制静默无效——详见 _focus_grid_for_copy
         self._focus_grid_for_copy()
 
+        # F5 数据拉取窗口补齐：同页刷新的 F5 后必须 ≥0.5s 才能复制（服务器
+        # 重新返回列表），清剪贴板/激活/聚焦等前置已与该窗口重叠——此处只
+        # 补剩余时间；无待定 F5（首访/换页）时零开销
+        pending_since = PositionService._f5_pending_since
+        if pending_since is not None:
+            PositionService._f5_pending_since = None
+            remaining = 0.5 - (time.time() - pending_since)
+            if remaining > 0:
+                time.sleep(remaining)
+
         with timed("keybd_event Ctrl+C ×2", self.logger):
             VK_CONTROL = win32con.VK_CONTROL  # 0x11
             VK_C = ord('C')                   # 0x43
@@ -896,6 +906,11 @@ class PositionService:
     # 必是真实导航、客户端会重新拉数据，无需 F5
     _last_copied_page = None
 
+    # F5 同页刷新的数据拉取窗口：F5 发出后键序必须等 ≥0.5s（服务器重新
+    # 返回列表），但清剪贴板/激活/聚焦等复制前置不碰数据，与该窗口重叠
+    # 执行（省 ~0.4s/次）——_send_ctrl_c 键序前消费此标记补齐剩余等待
+    _f5_pending_since = None
+
     def _f5_refresh_if_same_page(self, page_name: Optional[str]) -> None:
         """同页连续查询先 F5 刷新再复制；两种跳过：
         - 券商断连：页面无服务器数据可拉，F5 无意义（后置门控会作废本次
@@ -919,7 +934,9 @@ class PositionService:
         self.window_service.send_key("F5", background=True)
         from src.services.broker_link import mark_f5_sent
         mark_f5_sent()
-        time.sleep(0.5)  # 等券商服务器重新返回列表（同 F5 重查模式；0.8→0.5 压缩实测）
+        # 不在此处阻塞等待：0.5s 数据拉取窗口交给复制前置（清剪贴板/激活/
+        # 聚焦）重叠执行，键序发送前由 _send_ctrl_c 补齐剩余时间
+        PositionService._f5_pending_since = time.time()
 
     # ------------------------------------------------------------
     # 资金余额（control_id 批量读取，无需 OCR）

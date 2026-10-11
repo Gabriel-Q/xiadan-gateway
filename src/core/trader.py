@@ -271,21 +271,8 @@ class Trader:
                         raise ApiError(ErrorCode.WINDOW_NOT_FOUND, "关闭弹窗后交易窗口消失")
                     _descendants = list(window.descendants())
 
-        # 4.2 券商服务就绪门控：读「可买/可卖」数值——该值由行情/资金通道
-        # 填充，空=通道未就绪，提交只会被拒（2026-10-11 重启后实测：盘口无
-        # 数据期间 15 连败「不存在该证券」）。数值在代码被接受后异步填充，
-        # 单次读取会竞速误拦（同日实测首单读空、界面肉眼已见数值）——首读
-        # 为空时在 wait 预算内轮询重读，点击下单前读到即放行。仅空串拦截
-        # （预算耗尽仍空）；控件缺失/读取异常一律放行（fail-open，与
-        # broker_link 同哲学）；"0" 不拦——资金/持仓不足走既有服务端语义。
-        # 开关 order.verify_buyable_ready（默认开），预算
-        # order.verify_buyable_ready_wait_seconds（默认 3.0s）
-        if self.config.get_order_config().get("verify_buyable_ready", True):
-            _ready_cid = CONTROL_ID_BUYABLE if status == "1" else CONTROL_ID_SELLABLE
-            _ready_field = "可买" if status == "1" else "可卖"
-            with timed("可买/可卖就绪门控", self.logger):
-                self._verify_buyable_ready(window, _descendants,
-                                           _ready_cid, _ready_field)
+        # 4.2 券商服务就绪门控已移至 8a（点击下单按钮前的最后一刻）：
+        # 数值异步填充与填表时间重叠，且点击前判定最新鲜，见 _verify_buyable_ready
 
         # 5. 确保价格模式匹配
         # 策略：模式不匹配时先点击切换按钮（不等待），立即进入填数量——数量填充的
@@ -331,6 +318,20 @@ class Trader:
                     window, CONTROL_ID_PRICE, price, descendants=_descendants, delay=0.05,
                     double_click_clear=True, verify_clear=False)
                 time.sleep(0.05)
+
+        # 8a. 券商服务就绪门控（唯一检查点，紧贴点击下单按钮）：数值由客户端
+        # 在代码接受后异步填充，填数量/填价格的 ~1-2s 已与填充重叠；此处
+        # 定位+读取，首读空则在 order.verify_buyable_ready_wait_seconds
+        # （默认 3.0s）预算内轮询重读，预算耗尽仍空 → SERVER_UNAVAILABLE
+        # 不点击。仅空串拦截；控件缺失/读取异常放行（fail-open，与
+        # broker_link 同哲学）；"0" 不拦——资金/持仓不足走既有服务端语义。
+        # 开关 order.verify_buyable_ready（默认开）
+        if self.config.get_order_config().get("verify_buyable_ready", True):
+            _ready_cid = CONTROL_ID_BUYABLE if status == "1" else CONTROL_ID_SELLABLE
+            _ready_field = "可买" if status == "1" else "可卖"
+            with timed("可买/可卖就绪门控", self.logger):
+                self._verify_buyable_ready(window, _descendants,
+                                           _ready_cid, _ready_field)
 
         # 8. 点击下单按钮并处理弹窗
         # （提交按钮灰显前置检查已移除，2026-10-10：实测该客户端下单按钮
@@ -700,42 +701,54 @@ class Trader:
                      "name_text": actual},
         )
 
-    def _verify_buyable_ready(self, window, descendants, value_cid: int,
-                              field: str = "可买") -> None:
-        """「可买/可卖」就绪门控：空=行情/资金通道未就绪 → SERVER_UNAVAILABLE
+    def _locate_ready_value(self, window, descendants, value_cid: int,
+                            field: str = "可买"):
+        """定位「可买/可卖」数值 Image：标签槽位（1401）同行 ±8px 锚定防撞号
 
-        定位：标签槽位（1401——买入页「可买(股)」/卖出页「可用余额」）同行
-        ±8px 的数值 Image（买入 1018 / 卖出 1038）——数值 cid 全树有撞号
-        风险，锚定标签行保唯一。空串是唯一拦截条件；控件缺失/读取异常放行
-        （fail-open）；0 放行（资金/持仓不足由服务端既有语义兜底）。
-
-        数值由客户端在代码被接受后异步填充，单次读取与填充竞速（2026-10-11
-        实测：刚登录/长时间挂机后首单读空误拦，而界面肉眼已见数值）——首读
-        为空时在 order.verify_buyable_ready_wait_seconds（默认 3.0s）预算内
-        轮询重读：点击下单前读到即放行，预算耗尽仍空才判通道未就绪。
+        数值 cid 全树有撞号风险，锚定标签行保唯一。返回元素；
+        标签/数值控件缺失或定位异常返回 None（调用方按 fail-open 处理）。
         """
         try:
             label = self.window_service.find_element_in_window(
                 window, CONTROL_ID_BUYABLE_LABEL, descendants=descendants)
             if label is None:
                 self.logger.warning(f"未找到{field}标签槽位(1401)，就绪门控放行")
-                return
+                return None
             ltop = label.rectangle().top
-            el = None
             for candidate in descendants:
                 try:
                     if candidate.control_id() != value_cid:
                         continue
                     if abs(candidate.rectangle().top - ltop) <= 8:
-                        el = candidate
-                        break
+                        return candidate
                 except Exception:
                     continue
-            if el is None:
-                self.logger.warning(f"未找到{field}数值控件(cid={value_cid})，就绪门控放行")
-                return
         except Exception as e:
-            self.logger.warning(f"{field}读取异常，就绪门控放行: {e}")
+            self.logger.warning(f"{field}定位异常，就绪门控放行: {e}")
+            return None
+        self.logger.warning(f"未找到{field}数值控件(cid={value_cid})，就绪门控放行")
+        return None
+
+    def _verify_buyable_ready(self, window, descendants, value_cid: int,
+                              field: str = "可买") -> None:
+        """「可买/可卖」就绪门控（唯一检查点，紧贴点击下单按钮之前）
+
+        定位：标签槽位（1401——买入页「可买(股)」/卖出页「可用余额」）同行
+        ±8px 的数值 Image（买入 1018 / 卖出 1038）——数值 cid 全树有撞号
+        风险，锚定标签行保唯一。空串是唯一拦截条件；控件缺失/读取异常放行
+        （fail-open）；0 放行（资金/持仓不足由服务端既有语义兜底）。
+
+        数值由客户端在代码接受后异步填充，代码输入后立即读会竞速误拦
+        （2026-10-11 实测：刚登录/长时间挂机后首读空、界面肉眼已见数值）。
+        检查点放在点击前最后一刻：填数量/填价格的 ~1-2s 已与填充重叠，
+        判定也最新鲜（通道若在填表期间断掉，此处读得到）。首读为空时在
+        order.verify_buyable_ready_wait_seconds（默认 3.0s）预算内轮询
+        重读（间隔 0.2s），读到即放行；预算耗尽仍空 → SERVER_UNAVAILABLE
+        （不点击，幂等键未消耗）。仅内联无线程：填表要走焦点/键盘，
+        与 UIA 读数并发不安全，且单 UI 资源禁一切主动轮询设计。
+        """
+        el = self._locate_ready_value(window, descendants, value_cid, field)
+        if el is None:
             return
         text = ""
         waited = 0.0
@@ -761,7 +774,8 @@ class Trader:
         if text:
             if waited:
                 self.logger.info(
-                    f"{field}就绪门控通过（等待填充 {waited:.1f}s）: {field}={text}")
+                    f"{field}就绪门控通过（等待填充 {waited:.1f}s，已与填写重叠）"
+                    f": {field}={text}")
             else:
                 self.logger.info(f"{field}就绪门控通过: {field}={text}")
             return

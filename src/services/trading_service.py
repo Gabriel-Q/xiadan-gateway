@@ -41,6 +41,23 @@ class TradingService:
         # 连续撤单能否跳过准备操作的依据）
         self._had_dialog = False
 
+    # F3 撤单按钮缓存：四按钮 cid 跨页一致（30001/30002/30003/1946）、F3 页
+    # 结构会话内固定，按根句柄类级缓存后，撤单免"挡路弹窗检查+找按钮"两次
+    # 全树遍历（~0.6-0.8s×2）——类级原因同 PositionService（按任务实例化，
+    # order_routes 每次 new）。灰显判定读实时 is_enabled()，无可撤委托语义
+    # 不受缓存影响
+    _cancel_btn_cache = None   # {root_handle: {control_id: button}}
+
+    def _cancel_btn_cache_store(self, root_handle: int, control_id, btn) -> None:
+        """撤单按钮缓存写入（同根句柄按 cid 分桶）"""
+        try:
+            if TradingService._cancel_btn_cache is None:
+                TradingService._cancel_btn_cache = {}
+            TradingService._cancel_btn_cache.setdefault(
+                root_handle, {})[control_id] = btn
+        except Exception:
+            pass
+
     @report_window_state
     def cancel_all_orders(self, cancel_type: str = "A") -> dict:
         """撤单
@@ -83,16 +100,34 @@ class TradingService:
 
         self.window_service.send_key("F3", background=True)
         btn = None
-        for attempt in range(3):
-            time.sleep(0.15 if attempt == 0 else 0.3)
-            window = self.window_service.get_trading_window()
-            if window is None:
-                continue
-            if self._has_blocking_text(list(window.descendants()))                     and self._dismiss_blocking_popup(window):
+        # 快路径：类级按钮缓存——F3 后等渲染即读灰显态（实时 is_enabled()），
+        # 启用则直接点击缓存元素，免"挡路弹窗检查+找按钮"两次全树遍历；
+        # 未启用可能是页面未渲染完，走下方全遍历复核
+        cached = (TradingService._cancel_btn_cache or {}).get(
+            window.handle, {}).get(control_id)
+        if cached is not None:
+            time.sleep(0.15)
+            try:
+                if self._is_button_enabled(cached):
+                    btn = cached
+            except Exception:
+                self.logger.info("缓存撤单按钮读取异常，回退全树查找")
+        if btn is None:
+            for attempt in range(3):
+                time.sleep(0.15 if attempt == 0 else 0.3)
                 window = self.window_service.get_trading_window()
-            btn = self.window_service.find_element_in_window(window, control_id)
-            if btn is not None:
-                break
+                if window is None:
+                    continue
+                # 合并为一次遍历：挡路弹窗检查与找按钮共用同一棵树快照
+                _descendants = list(window.descendants())
+                if self._has_blocking_text(_descendants) and self._dismiss_blocking_popup(window):
+                    window = self.window_service.get_trading_window()
+                    _descendants = list(window.descendants())
+                btn = self.window_service.find_element_in_window(
+                    window, control_id, descendants=_descendants)
+                if btn is not None:
+                    self._cancel_btn_cache_store(window.handle, control_id, btn)
+                    break
         if btn is None:
             raise ApiError(
                 ErrorCode.CONTROL_NOT_FOUND,
@@ -110,7 +145,11 @@ class TradingService:
             }
 
         with timed("点击撤单按钮", self.logger):
-            self.window_service.click_element(window, control_id)
+            try:
+                btn.click_input()
+            except Exception:
+                # 缓存/新找元素点击失败：走带重试的标准点击（内部重新查找）
+                self.window_service.click_element(window, control_id)
             self.logger.info(f"已点击 {operation_name} 按钮")
 
         # 统一弹窗检测与处理：sleep(0.2) 等待渲染 + 一次 descendants 遍历

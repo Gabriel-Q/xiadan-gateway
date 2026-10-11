@@ -678,13 +678,17 @@ class WindowService(Singleton):
                 time.sleep(delay)
 
     def input_text_to_element(self, window, control_id, text: str, delay: float = 0.3,
-                              descendants=None) -> bool:
+                              descendants=None, clear_backspaces: int = 12) -> bool:
         """向输入框输入文本（先清空已有内容，再输入新内容）
 
-        清空策略（由快到慢）：
-        1. WM_SETTEXT 直接置空（最快，跳过 UI 渲染）
-        2. type_keys {HOME}+{END}{BACKSPACE} 全选删除（兜底）
-        3. 验证：若券商自动填充重新出现，再清一次
+        清空策略（2026-10-11 起仅击键段，按字段最大位数补足 BACKSPACE）：
+        1. {HOME}+{END}（对真 Edit 有效）+ clear_backspaces 个 BACKSPACE
+           ——自绘壳控件里 {HOME}+{END} 全选无效（实测每个 BACKSPACE 只删
+           1 位：残留"12345"三次清除仅剩"12"），必须按上限删满
+        2. 验证：若券商自动填充重新出现，再清一次
+        （原 WM_SETTEXT 置空对自绘壳控件是空操作，已移除——见方法内注释）
+        控件位数上限（2026-10-11 用户实测）：代码框最长 6 位且满位后再输
+        入会清空仅留新数字；价格/数量框最长 12 位，第 13 位起丢弃。
 
         注意：交易页的代码/价格/数量输入框是券商自绘壳控件，
         window_text() 回读恒为空，不能用作输入校验信号（2026-09-28
@@ -711,22 +715,21 @@ class WindowService(Singleton):
                 element.set_focus()
                 time.sleep(0.08)
 
-            # 方案一：先用 WM_SETTEXT 直接设置空文本（最快）
-            cleared = False
-            try:
-                ctrl_hwnd = element.handle
-                win32gui.SendMessage(ctrl_hwnd, win32con.WM_SETTEXT, 0, "")
-                cleared = True
-            except Exception:
-                pass
-
-            # 方案二：用 keyboard.SendKeys 做兜底清空
-            # {HOME}+{END}{BACKSPACE} = Home→Shift+End 全选→删除
-            # 比 ^a{BACKSPACE}（Ctrl+A）更可靠，某些控件不支持 Ctrl+A
-            # 注意用模块级 SendKeys 而非 element.type_keys——后者内部会
-            # 再调一次 UIA set_focus，退化会话下静默失败会丢掉点击刚
-            # 放好的字段焦点（2026-10-10 服务器实测复发）
-            _keyboard_send("{HOME}+{END}{BACKSPACE}")
+            # 清空：仅击键段（{HOME}+{END}{BACKSPACE} = Home→Shift+End
+            # 全选→删除；比 ^a{BACKSPACE}（Ctrl+A）更可靠，某些控件不支持
+            # Ctrl+A）。注意用模块级 SendKeys 而非 element.type_keys——后者
+            # 内部会再调一次 UIA set_focus，退化会话下静默失败会丢掉点击
+            # 刚放好的字段焦点（2026-10-10 服务器实测复发）。
+            # 原「方案一 WM_SETTEXT 置空」已移除（2026-10-11）：对代码/
+            # 价格/数量这类自绘壳控件它是空操作——可见数字活在客户端内部
+            # 缓冲，Win32 文本层恒空，写的只是那个空层（当日卖出页残留
+            # 2 位数字击穿首清实测）；对可读回字段（验证码 2404）击键清空
+            # 同样有效且本就有读回校验+二次清除兜底。
+            # 追加按上限补足的 BACKSPACE：自绘壳控件里 {HOME}+{END} 全选
+            # 无效、每个 BACKSPACE 只删 1 位（2026-10-11 用户目击「123 一个
+            # 一个删除」「12345 没删干净剩 2 位」），删满上限才保证清空；
+            # 空字段上为空操作，零副作用
+            _keyboard_send("{HOME}+{END}" + "{BACKSPACE}" * clear_backspaces)
             # 清空落定 0.25s：让击键清空在读回校验前落定、给券商自动回写
             # 留出现身时间（回写晚于窗口会被漏掉，残底+验证码叠加=错码）；
             # 客户端繁忙时注入排干可超 0.15s（2026-10-11 滞留键事故同源），
@@ -741,7 +744,7 @@ class WindowService(Singleton):
                     self.logger.info(
                         f"清空后仍有内容 '{remaining[:20]}'（券商自动填充），二次清除"
                     )
-                    _keyboard_send("{HOME}+{END}{BACKSPACE}")
+                    _keyboard_send("{HOME}+{END}" + "{BACKSPACE}" * clear_backspaces)
                     time.sleep(0.1)
             except Exception:
                 pass
@@ -752,10 +755,7 @@ class WindowService(Singleton):
             time.sleep(0.25)
 
             _keyboard_send(text)
-            self.logger.info(
-                f"输入文本 control_id={control_id}: {text}"
-                f"{' (WM_SETTEXT)' if cleared else ''}"
-            )
+            self.logger.info(f"输入文本 control_id={control_id}: {text}")
             return True
         except Exception as e:
             self.logger.error(f"输入文本失败 control_id={control_id}: {str(e)}")

@@ -2624,7 +2624,8 @@ class TestCodeAcceptedVerification:
                 return name_el
 
             def input_text_to_element(self, window, cid, text,
-                                      descendants=None, delay=0.1):
+                                      descendants=None, delay=0.1,
+                                      clear_backspaces=12):
                 input_calls.append((cid, text))
                 return True
 
@@ -2690,7 +2691,8 @@ class TestCodeAcceptedVerification:
                 return _NameEl()
 
             def input_text_to_element(self, window, cid, text,
-                                      descendants=None, delay=0.1):
+                                      descendants=None, delay=0.1,
+                                      clear_backspaces=12):
                 input_calls.append((cid, text))
                 state["retyped"] = True
                 return True

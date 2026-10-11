@@ -2625,7 +2625,8 @@ class TestCodeAcceptedVerification:
 
             def input_text_to_element(self, window, cid, text,
                                       descendants=None, delay=0.1,
-                                      clear_backspaces=12, double_click_clear=False):
+                                      clear_backspaces=12, double_click_clear=False,
+                                      verify_clear=True):
                 input_calls.append((cid, text))
                 return True
 
@@ -2692,7 +2693,8 @@ class TestCodeAcceptedVerification:
 
             def input_text_to_element(self, window, cid, text,
                                       descendants=None, delay=0.1,
-                                      clear_backspaces=12, double_click_clear=False):
+                                      clear_backspaces=12, double_click_clear=False,
+                                      verify_clear=True):
                 input_calls.append((cid, text))
                 state["retyped"] = True
                 return True

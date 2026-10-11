@@ -53,6 +53,14 @@ class PositionService:
     _captcha_path_cache = None
     _captcha_path_root_handle = None
 
+    # 导航缓存：左树 TreeItem 与各页网格 hwnd 是会话内稳定控件（与验证码
+    # 弹窗的每次重建不同），按根句柄+页名类级缓存后，后续导航免全树
+    # descendants 遍历（~0.6-0.8s/次）——类级原因同上（按请求实例化）。
+    # 引用失效由 is_selected/IsWindow 校验拦截并回退全遍历重录
+    _nav_root_handle = None
+    _nav_tree_items = None   # {page_name: TreeItem wrapper}
+    _nav_grid_hwnds = None   # {page_name: int hwnd}（消息级复制重选用）
+
     def __init__(self, window_service: WindowService, ocr_service=None):
         self.window_service = window_service
         self.ocr_service = ocr_service  # 注入 OCR 服务（避免循环依赖）
@@ -1581,13 +1589,76 @@ class PositionService:
             raise ApiError(ErrorCode.WINDOW_NOT_FOUND, "重新导航失败：未找到交易窗口")
         self._navigate_to_query_page(window, page_name)
 
+    def _nav_cache_lookup(self, window, page_name: str):
+        """导航缓存查询：返回 (TreeItem, grid_hwnd) 或 None
+
+        根句柄不符（主窗口重建）即失效；消息级复制模式下还要求该页网格
+        hwnd 已缓存且 IsWindow 有效——键盘模式 hwnd 无关可缺省。
+        """
+        if (PositionService._nav_root_handle != window.handle
+                or not PositionService._nav_tree_items):
+            return None
+        item = PositionService._nav_tree_items.get(page_name)
+        if item is None:
+            return None
+        hwnd = None
+        if self._use_message_copy():
+            hwnd = (PositionService._nav_grid_hwnds or {}).get(page_name)
+            if hwnd is None:
+                return None
+            try:
+                import win32gui
+                if not win32gui.IsWindow(hwnd):
+                    return None
+            except Exception:
+                return None
+        return item, hwnd
+
+    def _nav_cache_store(self, window, page_name: str, item) -> None:
+        """导航缓存写入：同根句柄下按页缓存 TreeItem 与网格 hwnd"""
+        try:
+            if (PositionService._nav_root_handle != window.handle
+                    or PositionService._nav_tree_items is None):
+                PositionService._nav_root_handle = window.handle
+                PositionService._nav_tree_items = {}
+                PositionService._nav_grid_hwnds = {}
+            PositionService._nav_tree_items[page_name] = item
+            if self._cached_grid_hwnd:
+                PositionService._nav_grid_hwnds[page_name] = self._cached_grid_hwnd
+        except Exception:
+            pass
+
     def _navigate_to_query_page(self, window, page_name: str) -> None:
         """导航到查询页面
 
         一次 descendants 遍历同时用于 Tree 查找 + 弹窗检测（省去两次分
         别遍历的 ~2s 开销）。TreeItem 兜底复用同一次遍历。
+
+        快路径：类级导航缓存命中（左树/网格为会话内稳定控件）时免全树
+        遍历，解析缓存 TreeItem 点击并验证；已在目标页则跳过点击（页面
+        新鲜度由 _f5_refresh_if_same_page 保证）；引用失效回退全遍历重录。
+        挡路弹窗检查在快路径省略——随后的复制循环自带验证码/弹窗处理。
         """
         parent_name = "查询[F4]"
+
+        cached = self._nav_cache_lookup(window, page_name)
+        if cached is not None:
+            item, hwnd = cached
+            with timed(f"导航到 {page_name}", self.logger):
+                try:
+                    if self._use_message_copy():
+                        self._cached_grid_hwnd = hwnd
+                    if item.is_selected():
+                        self.logger.info(
+                            f"已在 '{page_name}' 页(缓存命中)，跳过树点击")
+                        return
+                    item.click_input()
+                    time.sleep(0.15)
+                    if item.is_selected():
+                        self.logger.info(f"已通过缓存树项点击 '{page_name}'")
+                        return
+                except Exception:
+                    self.logger.info(f"缓存树项失效，回退全树扫描: {page_name}")
 
         with timed(f"导航到 {page_name}", self.logger):
             _descendants = list(window.descendants())  # 唯一一次遍历
@@ -1623,6 +1694,7 @@ class PositionService:
                 if found is not None and page_name in (found.window_text() or ""):
                     self._click_tree_item_verified(found, page_name)
                     self.logger.info(f"已通过树形路径点击 '{page_name}'")
+                    self._nav_cache_store(window, page_name, found)
                     self._check_blocking_popup(_descendants, window)
                     return
 
@@ -1633,6 +1705,7 @@ class PositionService:
                     if page_name in safe_text(el):
                         self._click_tree_item_verified(el, page_name)
                         self.logger.info(f"已通过 TreeItem 匹配点击 '{page_name}'")
+                        self._nav_cache_store(window, page_name, el)
                         self._check_blocking_popup(_descendants, window)
                         return
 

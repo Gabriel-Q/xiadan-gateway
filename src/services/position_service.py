@@ -37,12 +37,12 @@ class PositionService:
     POSITION_TABLE_COLUMNS = {"成本价", "股票余额"}
     TRADES_TABLE_COLUMNS = {"成交时间", "成交编号"}
     ORDERS_TABLE_COLUMNS = {"委托价格", "委托数量"}
-    # 当日委托可见性延迟的重查节奏：模拟盘实测新委托挂进券商列表可延迟
-    # 数十秒（2026-10-10 用户 VNC 目击），单次 F5 重查不够。指数退避共
-    # 3 轮，最坏额外 ~15s（含每轮复制 ~2-3s），仍在 40s 客户端推荐超时内；
-    # 每轮命中即止，全未命中交回调用方按未命中处理（契约：
-    # entrust_no_verified=false / 回补 null → 调用方回退 /orders/pending）
-    _ENTRUST_REFRESH_WAITS = (1.0, 2.0, 4.0)
+    # 当日委托可见性延迟的重查节奏：指数退避共 3 轮，每轮命中即止，全未
+    # 命中交回调用方按未命中处理（契约：entrust_no_verified=false / 回补
+    # null → 调用方回退 /orders/pending）。2026-10-11 压测 15+6 单全部
+    # 第 1 轮即命中，退避 1/2/4s 偏保守，收紧为 0.5/1/2s（最坏额外 ~10s，
+    # 仍在 40s 客户端推荐超时内）；若 verified:false 回归再回调
+    _ENTRUST_REFRESH_WAITS = (0.5, 1.0, 2.0)
 
     def __init__(self, window_service: WindowService, ocr_service=None):
         self.window_service = window_service
@@ -1283,7 +1283,7 @@ class PositionService:
                 with timed("输入验证码", self.logger):
                     self.window_service.input_text_to_element(
                         window, CAPTCHA_INPUT_ID, ocr_text, descendants=_descendants,
-                        clear_backspaces=8, double_click_clear=True)
+                        clear_backspaces=4)
                 if not self._click_button(window, CAPTCHA_OK_BUTTON_ID, descendants=_descendants):
                     self.logger.warning("未找到验证码确定按钮")
                     continue

@@ -21,6 +21,25 @@ from src.utils.poll import timed
 from src.utils.singleton import Singleton
 
 
+def _fast_double_click(rect) -> None:
+    """win32 直发双击（聚焦+全选）——绕开 pywinauto double_click_input
+    的两次完整 click_input 封装（实测单字段 ~1.5s，直发 ~0.15s）。
+
+    点击控件矩形正中：数字类字段任意位置均可用（2026-10-11 用户实测
+    价格框点击位在首位数字后即整体全选含小数点），正中必满足。
+    """
+    import win32api
+    import win32con
+    x = int((rect.left + rect.right) / 2)
+    y = int((rect.top + rect.bottom) / 2)
+    win32api.SetCursorPos((x, y))
+    time.sleep(0.05)
+    for _ in range(2):  # 两击间隔远小于系统双击时限(默认 500ms)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.02)
+
+
 def _keyboard_send(keys: str, pause: float = 0.08) -> None:
     """向当前键盘焦点控件发送按键（绝不触碰焦点）
 
@@ -715,7 +734,7 @@ class WindowService(Singleton):
             # 路径的 _focus_grid_for_copy 同一原理：定向点击替代盲聚焦
             try:
                 if double_click_clear:
-                    element.double_click_input()  # 聚焦+全选一步完成
+                    _fast_double_click(element.rectangle())  # 聚焦+全选一步完成
                 else:
                     element.click_input()
                 time.sleep(0.08)
@@ -743,11 +762,12 @@ class WindowService(Singleton):
                 # 无效（实测每个 BACKSPACE 只删 1 位：残留"12345"三次
                 # 清除仅剩"12"），必须按上限删满
                 _keyboard_send("{HOME}+{END}" + "{BACKSPACE}" * clear_backspaces)
-            # 清空落定 0.25s：让击键清空在读回校验前落定、给券商自动回写
-            # 留出现身时间（回写晚于窗口会被漏掉，残底+验证码叠加=错码）；
-            # 客户端繁忙时注入排干可超 0.15s（2026-10-11 滞留键事故同源），
-            # 与其后 0.25s 排干窗职责不同（此段管落定与回写，彼段管队列隔离）
-            time.sleep(0.25)
+            # 清空落定 0.1s：让击键清空在读回校验前落定、给券商自动回写
+            # 留出现身时间（回写晚于窗口会被漏掉，残底+验证码叠加=错码）。
+            # 速度与防滞留的折中值：繁忙场景滞留键曾观测 >0.15s（2026-10-11
+            # 事故同源），若残码回归优先上调此处；与其后 0.1s 排干窗职责
+            # 不同（此段管落定与回写，彼段管队列隔离）
+            time.sleep(0.1)
 
             # 验证清空结果：检测券商自动填充是否在清空后重新写入
             # （如输入新代码后券商立即推价格，恰好覆盖了清空操作）
@@ -764,8 +784,9 @@ class WindowService(Singleton):
 
             # 清空→键入之间强制排干注入队列：滞留击键（上一批/清空段的
             # BACKSPACE 等）跨此边界落地会造成「残码+部分码」——壳控件
-            # 回读恒空，无法读回校验，只能以固定排干窗隔离两段
-            time.sleep(0.25)
+            # 回读恒空，无法读回校验，固定排干窗隔离两段；0.1s 为速度
+            # 折中（滞留观测曾超 0.15s，残码回归优先上调此处）
+            time.sleep(0.1)
 
             _keyboard_send(text)
             self.logger.info(f"输入文本 control_id={control_id}: {text}")

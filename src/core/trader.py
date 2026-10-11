@@ -175,6 +175,41 @@ class Trader:
             Trader._ui_baseline_cache.pop(window.handle, None)
         self._ui_text_baseline = None
 
+    def _popup_exists_fast(self, window) -> bool:
+        """提交后弹窗快速判空：枚举 #32770 子对话框探标记（1365/1040）
+
+        等价性：本客户端全部提交后弹窗（委托确认/警告/错误/验证码）为主
+        窗口 #32770 直接子对话框（~20 控件，标记 cid 1365/1040）——无此类
+        子级即无弹窗（快速交易模式）。未知形态弹窗不在覆盖范围，由委托
+        登记/横幅/升级装饰器交叉兜底；枚举失败返回 True 交由全量路径。
+        """
+        try:
+            for child in window.children():
+                try:
+                    if child.class_name() != "#32770":
+                        continue
+                    if (self.window_service.find_element_in_window(
+                            child, CONFIRM_DIALOG_TITLE_ID) is not None
+                            or self.window_service.find_element_in_window(
+                            child, CONFIRM_DETAIL_TEXT_ID) is not None):
+                        return True
+                except Exception:
+                    continue
+            return False
+        except Exception:
+            return True
+
+    def _top_level_prompt_exists(self) -> bool:
+        """独立顶层"提示"窗变体检测（Desktop 枚举 ~10ms，截止时查一次即可）"""
+        try:
+            from pywinauto import Desktop
+            for w in Desktop(backend="uia").windows(visible_only=True):
+                if "提示" in (w.window_text() or ""):
+                    return True
+        except Exception:
+            pass
+        return False
+
     @report_window_state
     @escalate_unknown_order_state
     def place_order(
@@ -456,9 +491,24 @@ class Trader:
         warning_dismissed = False
 
         with timed("弹窗检测与处理", self.logger):
-            time.sleep(0.2)  # 等待弹窗渲染（实际 <0.15s），省 0.2s vs 0.4s
-
-            for check_attempt in range(5):
+            # 快速判空：提交后弹窗均为 #32770 子对话框或顶层"提示"窗——
+            # 0.2s 渲染窗口内以 0.05s 步进探子对话框（弹窗 <0.15s 出现），
+            # 截止时补查一次顶层提示窗（出现后驻留不会漏）；全无 = 快速
+            # 交易模式（E 分支语义），免全树遍历 ~0.9s。探到弹窗走既有
+            # 全量 A/B/C/D 处理，语义不变
+            popup_deadline = time.time() + 0.2
+            popup_seen = False
+            while True:
+                window = self.window_service.get_trading_window_fast()
+                if window is not None and self._popup_exists_fast(window):
+                    popup_seen = True
+                    break
+                if time.time() >= popup_deadline:
+                    if window is not None and self._top_level_prompt_exists():
+                        popup_seen = True
+                    break
+                time.sleep(0.05)
+            for check_attempt in range(5 if popup_seen else 0):
                 window = self.window_service.get_trading_window_fast()
                 if window is None:
                     time.sleep(0.1)

@@ -1323,7 +1323,7 @@ class WindowService(Singleton):
         try:
             with timed("激活窗口（分层）", self.logger):
                 self.ensure_foreground(window, purpose="任务前置重置")
-                time.sleep(0.3)
+                time.sleep(0.1)
         except ApiError:
             raise
         except Exception as e:
@@ -1343,7 +1343,7 @@ class WindowService(Singleton):
         with timed("ESC×5 回退到 F1", self.logger):
             for _ in range(5):
                 self.send_key("ESC", background=True)
-                time.sleep(0.1)
+                time.sleep(0.05)
 
     # ------------------------------------------------------------
     # 剪切板

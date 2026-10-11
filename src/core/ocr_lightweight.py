@@ -233,6 +233,13 @@ class LightweightCaptchaOCR:
         dark_rows = np.where(h_proj >= 2)[0]
         if len(dark_rows) == 0:
             return []
+        # 行带只取最大连续段——丢弃远离数字主体的孤立噪点行。
+        # 2026-10-11 实测：90×40 渲染的验证码位图最底行含 2 个暗噪点，
+        # dark_rows[-1] 被撑到行 39（数字实际止于行 28），行带膨胀 40%，
+        # 数字被压进归一化画布的上 3/5——竖向分辨率损失且误读（3→1、
+        # 6/5/0→9、1→7）。噪点行与数字主体间隔 ≥3 空行，连续段切分即剔
+        row_runs = np.split(dark_rows, np.where(np.diff(dark_rows) > 2)[0] + 1)
+        dark_rows = max(row_runs, key=len)
         top = max(0, dark_rows[0] - 1)
         bottom = min(h, dark_rows[-1] + 2)
 

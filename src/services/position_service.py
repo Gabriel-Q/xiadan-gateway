@@ -1283,8 +1283,8 @@ class PositionService:
                 with timed("输入验证码", self.logger):
                     self.window_service.input_text_to_element(
                         window, CAPTCHA_INPUT_ID, ocr_text, descendants=_descendants,
-                        clear_backspaces=4, double_click_clear=True,
-                        verify_clear=False)
+                        clear_backspaces=1, double_click_clear=True,
+                        verify_clear=False, type_pause=0.03)
                 if not self._click_button(window, CAPTCHA_OK_BUTTON_ID, descendants=_descendants):
                     self.logger.warning("未找到验证码确定按钮")
                     continue

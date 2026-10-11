@@ -40,16 +40,16 @@ def _fast_double_click(rect) -> None:
         time.sleep(0.02)
 
 
-def _keyboard_send(keys: str, pause: float = 0.08) -> None:
+def _keyboard_send(keys: str, pause: float = 0.05) -> None:
     """向当前键盘焦点控件发送按键（绝不触碰焦点）
 
     必须用 pywinauto 模块级 SendKeys 而非 HwndWrapper.type_keys——后者
     内部先调 UIA set_focus，退化会话下静默失败会把点击刚放好的字段
     焦点丢掉，击键落空（2026-10-10 服务器实测）。调用方负责先聚焦
-    （click_input 真实点击）。pause=键间节流（默认 0.08s：客户端繁忙
-    时 0.05 默认值会让击键在消息队列里积压错位——2026-10-11 用户目击
-    「先输入代码→清空→又输入剩余代码」：上一批滞留键跨清空边界落地，
-    字段成残码、名称联动必败）。
+    （click_input 真实点击）。pause=键间节流（pywinauto 历史默认
+    0.05s；2026-10-11 曾临时提至 0.08 抗击键积压，当日结构性修复
+    ——清空改按上限补足 BS + 排干窗——落地后回调 0.05；若残码回归
+    优先上调此处）。
     """
     from pywinauto import keyboard
     keyboard.SendKeys(keys, pause=pause)
@@ -698,7 +698,9 @@ class WindowService(Singleton):
 
     def input_text_to_element(self, window, control_id, text: str, delay: float = 0.3,
                               descendants=None, clear_backspaces: int = 12,
-                              double_click_clear: bool = False) -> bool:
+                              double_click_clear: bool = False,
+                              verify_clear: bool = True,
+                              type_pause: float = 0.05) -> bool:
         """向输入框输入文本（先清空已有内容，再输入新内容）
 
         清空策略（2026-10-11 起仅击键段）：
@@ -754,9 +756,10 @@ class WindowService(Singleton):
             # 同样有效且本就有读回校验+二次清除兜底。
             if dc_done:
                 # 双击已全选（2026-10-11 用户发现：双击自动全选全部文本）
-                # → 单 BS 即准确清空；再补 2 个 BS 防全选只覆盖词段
-                # （空字段/全删后均为空操作，零副作用）
-                _keyboard_send("{BACKSPACE}{BACKSPACE}{BACKSPACE}")
+                # → 单 BS 即准确清空；min(clear_backspaces,3) 为防全选只
+                # 覆盖词段的保险（纯数字字段 1 个即够——失败廉价的字段
+                # 如验证码传 1 省时；代码/数量传 8/12 仍得 3 个保险）
+                _keyboard_send("{BACKSPACE}" * max(1, min(clear_backspaces, 3)))
             else:
                 # {HOME}+{END}+按上限补足 BACKSPACE——自绘壳控件里全选
                 # 无效（实测每个 BACKSPACE 只删 1 位：残留"12345"三次
@@ -770,17 +773,21 @@ class WindowService(Singleton):
             time.sleep(0.1)
 
             # 验证清空结果：检测券商自动填充是否在清空后重新写入
-            # （如输入新代码后券商立即推价格，恰好覆盖了清空操作）
-            try:
-                remaining = (element.window_text() or "").strip()
-                if remaining:
-                    self.logger.info(
-                        f"清空后仍有内容 '{remaining[:20]}'（券商自动填充），二次清除"
-                    )
-                    _keyboard_send("{HOME}+{END}" + "{BACKSPACE}" * clear_backspaces)
-                    time.sleep(0.1)
-            except Exception:
-                pass
+            # （如输入新代码后券商立即推价格，恰好覆盖了清空操作）。
+            # verify_clear=False 跳过读回——自绘壳控件回读恒空、读回本身
+            # 却要 ~1-2s UIA 往返（2026-10-11 用户目击每字段 ~2s 空窗），
+            # 仅对可读回字段（验证码 2404）启用
+            if verify_clear:
+                try:
+                    remaining = (element.window_text() or "").strip()
+                    if remaining:
+                        self.logger.info(
+                            f"清空后仍有内容 '{remaining[:20]}'（券商自动填充），二次清除"
+                        )
+                        _keyboard_send("{HOME}+{END}" + "{BACKSPACE}" * clear_backspaces)
+                        time.sleep(0.1)
+                except Exception:
+                    pass
 
             # 清空→键入之间强制排干注入队列：滞留击键（上一批/清空段的
             # BACKSPACE 等）跨此边界落地会造成「残码+部分码」——壳控件
@@ -788,7 +795,7 @@ class WindowService(Singleton):
             # 折中（滞留观测曾超 0.15s，残码回归优先上调此处）
             time.sleep(0.1)
 
-            _keyboard_send(text)
+            _keyboard_send(text, pause=type_pause)
             self.logger.info(f"输入文本 control_id={control_id}: {text}")
             return True
         except Exception as e:

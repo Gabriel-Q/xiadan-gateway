@@ -175,7 +175,7 @@ class BannerDigitOCR:
             return [g]
         if not (DIGIT_W_MAX < w <= 30):
             return []
-        best = None  # (IoU 总分, [子字形])
+        best = None  # (IoU 均分, 子字形数, [子字形])
         for est in SPLIT_ESTIMATES:
             n = max(2, round(w / est))
             if n * DIGIT_W_MIN > w + 3 or n > 4:
@@ -195,9 +195,17 @@ class BannerDigitOCR:
                     break
                 arrs.append(sub)
                 total += c
-            if ok and (best is None or total > best[0]):
-                best = (total, arrs)
-        return best[1] if best else []
+            if ok:
+                # 均分而非总分选优——总分偏向更多碎片（每片 IoU≤1，片越
+                # 多理论上限越高）：2026-10-11 实测"48"黏 17px 被均分为 3
+                # 份读成 203（碎片 conf 0.50/0.51/0.68，总分 1.69 反超真
+                # 2 份 (4,0.69)+(8,0.59) 的 1.28）；改均分后 0.64>0.563 正
+                # 确回位。平局取更少碎片
+                score = total / n
+                if best is None or score > best[0] + 1e-9 or (
+                        score >= best[0] - 1e-9 and n < best[1]):
+                    best = (score, n, arrs)
+        return best[2] if best else []
 
     # ------------------------------------------------------------
 

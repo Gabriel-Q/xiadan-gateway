@@ -30,7 +30,7 @@ from src.models.config import AppConfig
 from src.services.window_service import WindowService
 from src.utils.diagnostic import DiagnosticUtil
 from src.utils.logger import Logger
-from src.utils.poll import poll_until, timed, PollTimeoutError
+from src.utils.poll import poll_until, timed, PollTimeoutError, PollTimeoutError
 from src.utils.uia import safe_text
 
 
@@ -273,9 +273,13 @@ class Trader:
 
         # 4.2 券商服务就绪门控：读「可买/可卖」数值——该值由行情/资金通道
         # 填充，空=通道未就绪，提交只会被拒（2026-10-11 重启后实测：盘口无
-        # 数据期间 15 连败「不存在该证券」）。仅空串拦截；控件缺失/读取异常
-        # 一律放行（fail-open，与 broker_link 同哲学）；"0" 不拦——资金/
-        # 持仓不足走既有服务端语义。开关 order.verify_buyable_ready（默认开）
+        # 数据期间 15 连败「不存在该证券」）。数值在代码被接受后异步填充，
+        # 单次读取会竞速误拦（同日实测首单读空、界面肉眼已见数值）——首读
+        # 为空时在 wait 预算内轮询重读，点击下单前读到即放行。仅空串拦截
+        # （预算耗尽仍空）；控件缺失/读取异常一律放行（fail-open，与
+        # broker_link 同哲学）；"0" 不拦——资金/持仓不足走既有服务端语义。
+        # 开关 order.verify_buyable_ready（默认开），预算
+        # order.verify_buyable_ready_wait_seconds（默认 3.0s）
         if self.config.get_order_config().get("verify_buyable_ready", True):
             _ready_cid = CONTROL_ID_BUYABLE if status == "1" else CONTROL_ID_SELLABLE
             _ready_field = "可买" if status == "1" else "可卖"
@@ -704,6 +708,11 @@ class Trader:
         ±8px 的数值 Image（买入 1018 / 卖出 1038）——数值 cid 全树有撞号
         风险，锚定标签行保唯一。空串是唯一拦截条件；控件缺失/读取异常放行
         （fail-open）；0 放行（资金/持仓不足由服务端既有语义兜底）。
+
+        数值由客户端在代码被接受后异步填充，单次读取与填充竞速（2026-10-11
+        实测：刚登录/长时间挂机后首单读空误拦，而界面肉眼已见数值）——首读
+        为空时在 order.verify_buyable_ready_wait_seconds（默认 3.0s）预算内
+        轮询重读：点击下单前读到即放行，预算耗尽仍空才判通道未就绪。
         """
         try:
             label = self.window_service.find_element_in_window(
@@ -725,21 +734,47 @@ class Trader:
             if el is None:
                 self.logger.warning(f"未找到{field}数值控件(cid={value_cid})，就绪门控放行")
                 return
-            text = (safe_text(el) or "").strip()
         except Exception as e:
             self.logger.warning(f"{field}读取异常，就绪门控放行: {e}")
             return
+        text = ""
+        waited = 0.0
+        try:
+            text = (el.window_text() or "").strip()
+            if not text:
+                wait_seconds = float(self.config.get_order_config().get(
+                    "verify_buyable_ready_wait_seconds", 3.0))
+                _start = time.time()
+                try:
+                    text = (poll_until(
+                        lambda: (el.window_text() or "").strip(),
+                        timeout=max(0.0, wait_seconds), interval=0.2,
+                        description=f"{field}数值异步填充") or "").strip()
+                except PollTimeoutError:
+                    text = ""  # 预算耗尽仍空 → 落入下方拦截（非读取异常）
+                waited = time.time() - _start
+        except Exception as e:
+            # 元素失效（窗口重建等）≠「空」——与控件缺失同级 fail-open，
+            # 不落入下方拦截
+            self.logger.warning(f"{field}读取异常，就绪门控放行: {e}")
+            return
         if text:
-            self.logger.info(f"{field}就绪门控通过: {field}={text}")
+            if waited:
+                self.logger.info(
+                    f"{field}就绪门控通过（等待填充 {waited:.1f}s）: {field}={text}")
+            else:
+                self.logger.info(f"{field}就绪门控通过: {field}={text}")
             return
         raise ApiError(
             ErrorCode.SERVER_UNAVAILABLE,
             f"「{field}」数据为空——券商行情/资金通道未就绪，此时提交将被"
-            f"拒绝（实测「不存在该证券」），已取消本次提交",
+            f"拒绝（实测「不存在该证券」），已取消本次提交"
+            f"（等待 {waited:.1f}s 仍为空）",
             suggestion=("等待券商服务就绪后重试（可先 GET /health 观察 "
                         "broker 状态）；若持续出现请检查券商服务器状态或"
                         "重新登录"),
-            details={"field": field, "value_cid": value_cid},
+            details={"field": field, "value_cid": value_cid,
+                     "wait_seconds": round(waited, 2)},
         )
 
     def _click_price_type_toggle(self, window, descendants=None) -> None:

@@ -225,7 +225,7 @@ Enabled via `order.fast_mode: true` (highest priority — all other `order.*` ke
 
 ### Prerequisites (Manual One-Time Adjustment)
 
-**Before running the fast mode, manually drag the broker window width so that BOTH the buy and sell components on the 双向委托 page are fully visible on screen.** The fast mode clicks and reads at the controls' current positions; a sell form pushed off-screen means clicks land nowhere. With `fast_mode` enabled the gateway auto-runs the bootstrap at startup (navigate to the bidir page + enforce three checkboxes: 只显示可撤委托 = checked, 买卖代码联动 / 委托后不清空 = unchecked); with `fast_mode=false` the bootstrap never runs (strict isolation — the client keeps its default F1 starting state).
+**Before running the fast mode, manually drag the broker window width so that BOTH the buy and sell components on the 双向委托 page are fully visible on screen.** The fast mode clicks and reads at the controls' current positions; a sell form pushed off-screen means clicks land nowhere. With `fast_mode` enabled the gateway waits for the broker login automatically (checks every 5s, up to 30 minutes) and runs the bootstrap 3 seconds after login is detected (navigate to the bidir page + enforce three checkboxes: 只显示可撤委托 = checked, 买卖代码联动 / 委托后不清空 = unchecked); a failed or timed-out bootstrap falls back to lazy bootstrap on the first fast task; with `fast_mode=false` the bootstrap never runs (strict isolation — the client keeps its default F1 starting state).
 
 ### Semantics and Precautions
 

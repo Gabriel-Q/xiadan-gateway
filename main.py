@@ -168,7 +168,6 @@ def main():
         # 后台线程延迟 3s（让开客户端登录绘制期），经 TaskQueue 串行执行；
         # 失败不阻塞服务——每个 /fast 请求入口都有 ensure_home 懒重试。
         def _fast_bootstrap():
-            time.sleep(3)
             try:
                 # 严格隔离：order.fast_mode=false 时引导完全不执行，
                 # 不触碰客户端（传统流程保持默认 F1 起始态）
@@ -177,11 +176,33 @@ def main():
                     return
                 from src.api.task_queue import TaskQueue
                 from src.services.fast_trader import FastTrader
+                from src.services.window_service import WindowService
+                ws = WindowService()
+                # 等待券商登录：轮询交易窗口出现（5s 间隔，最长 30 分钟）——
+                # 先启动网关后登录客户端的场景由本循环覆盖；登录检测后引导
+                # 仍失败（或超时放弃）则由首个极速任务懒引导兜底
+                logger.info("极速模式启动引导：等待券商登录（每 5s 检测，最长 30 分钟）")
+                deadline = time.time() + 1800
+                detected = False
+                while time.time() < deadline:
+                    try:
+                        if ws.get_trading_window() is not None:
+                            detected = True
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(5)
+                if not detected:
+                    logger.warning("极速模式启动引导放弃：30 分钟内未检测到登录窗口"
+                                   "（首个极速任务会懒引导兜底）")
+                    return
+                time.sleep(3)  # 检测到登录后延时 3s，等界面元素绘制稳定
+                logger.info("检测到券商登录，执行极速模式启动引导")
                 TaskQueue.get_instance().submit(
                     func=lambda: FastTrader().bootstrap(),
                     task_name="fast_bootstrap", params={}, timeout=30)
             except Exception as e:
-                logger.warning(f"极速模式启动引导失败（首个请求会重试）: {e}")
+                logger.warning(f"极速模式启动引导失败（首个极速任务会懒引导兜底）: {e}")
 
         threading.Thread(target=_fast_bootstrap, daemon=True,
                          name="fast-bootstrap").start()

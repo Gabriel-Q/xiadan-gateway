@@ -87,10 +87,12 @@ def create_app() -> Flask:
     from src.api.query_routes import query_bp
     from src.api.order_routes import order_bp
     from src.api.action_routes import action_bp
+    from src.api.fast_routes import fast_bp
 
     app.register_blueprint(query_bp)
     app.register_blueprint(order_bp)
     app.register_blueprint(action_bp)
+    app.register_blueprint(fast_bp)
 
     logger.info("所有路由注册完成")
     return app

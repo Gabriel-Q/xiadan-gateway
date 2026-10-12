@@ -21,6 +21,7 @@ A trading gateway for TongHuaShun `xiadan.exe` — controls the THS order-entry 
 - [Quick Start](#quick-start) (incl. [Prerequisites: Broker Software Settings](#prerequisites-broker-software-settings) / [Unattended Operation on a Server (VNC Recommended; RDP Works)](#unattended-operation-on-a-server-vnc-recommended-rdp-works))
 - [Required Before Going Live (Security Checklist)](#required-before-going-live-security-checklist)
 - [Configuration](#configuration)
+- [Fast Mode (Bidirectional Single-Page Flow)](#fast-mode-bidirectional-single-page-flow): [Prerequisites (Manual One-Time Adjustment)](#prerequisites-manual-one-time-adjustment) / [Semantics and Precautions](#semantics-and-precautions)
 - [API](#api): [Response Format](#response-format) / [Error Codes](#error-codes) / [Endpoints](#endpoints) / [Place Order](#post-orders--place-order) / [Order Status & Fill Report](#get-ordersentrust_nostatus--order-status--fill-report) / [Cancel Orders](#post-orderscancel-all--cancel-orders) / [Auxiliary Endpoints](#auxiliary-endpoints) / [Client Timeout Configuration](#client-timeout-configuration)
 - [MCP Server (Agent Access)](#mcp-server-agent-access)
 - [Skill Access (Any LLM Tool)](#skill-access-any-llm-tool)
@@ -172,6 +173,7 @@ Copy `config/app_config.example.json` to `config/app_config.json` and edit `trad
   "alerts": { "webhook_url": "", "format": "generic", "timeout_seconds": 5 },
   "ocr": { "warmup_on_start": true, "max_retry": 3, "ddddocr_enabled": false },
   "query": { "copy_method": "keyboard" },
+  "order": { "fast_mode": false },
   "auth": { "enabled": false, "token": "" },
   "logging": { "level": "INFO", "file": "logs/app.log", "screenshot_dir": "logs/screenshots" }
 }
@@ -189,6 +191,7 @@ Copy `config/app_config.example.json` to `config/app_config.json` and edit `trad
 | `alerts.format` | generic | `generic`=full structured JSON (custom receiver); `text`=WeCom group-bot / DingTalk custom-bot text format; `feishu`=Feishu/Lark custom-bot text format |
 | `alerts.timeout_seconds` | 5 | Webhook POST timeout (seconds). Sent on a background daemon thread, never blocks the trading path |
 | `ocr.max_retry` | 3 | Max captcha OCR retries |
+| `order.fast_mode` | false | **Fast-mode master switch (highest priority)**: when true, `POST /orders` limit orders route through the 双向委托 single-page fast path (~2.5s/order, cancel ~0.5s via `/fast/cancel`); all other `order.*` keys are ignored (no banner capture / no entrust-number recovery / no reconciliation / no name-linkage check / no trading-hours precheck — the only gate is a non-negative buyable/sellable read). Market orders never take the fast path — they fall back to the legacy flow. Companion endpoints: `/fast/home`, `/fast/orders`, `/fast/cancel`, `/fast/positions|trades|orders` (F8 cancellable-only), `/fast/orders/full`, `/fast/balance` |
 | `order.reject_outside_trading_hours` | false | Fail fast at `place_order` entry outside trading hours (weekday + statutory holidays + 9:15-11:30 / 13:00-15:00; three-tier holiday calendar: chinesecalendar → SZSE official monthly calendar (current year fetched once and cached under `data/trading_calendar/`, offline reads once complete) → weekday-only — broker errors remain the fallback). Off by default to preserve after-hours order queuing |
 | `order.capture_entrust_no` | false | After a successful order, capture the contract number from the bottom-right success banner (background screen-grab + template OCR, trailing-period anchored — broker number lengths vary). `null` on capture failure; order success is independent (see the response note). Adds ~1s on success, up to the 5s capture timeout on failure. Pair with `order.verify_entrust_no` for reconciliation. Session modes: console-attached (VNC) and RDP-attached sessions read directly (2026-10-10 field-verified); an RDP-disconnected session cannot be read reliably — the height-class gate declines, and orders fall through to `order.recover_entrust_no` |
 | `order.entrust_no_timeout_seconds` | 5.0 | Banner-capture wait timeout (seconds); returns immediately on success, only slows the failure path |
@@ -204,6 +207,35 @@ Copy `config/app_config.example.json` to `config/app_config.json` and edit `trad
 | `logging.level` | INFO | Log level (set `DEBUG` for troubleshooting UIA control failures; hot-applies without restart) |
 
 > Config reloads via `POST /admin/reload-config` (some path changes need a restart). Timeouts follow the latest performance measurements (2026-08 simulated-market: worst-case order ~8s, worst-case query ~12s incl. failure retries; 30s gives 2.5–3.5× headroom; hung tasks trigger watchdog recovery sooner and callers fail faster).
+
+## Fast Mode (Bidirectional Single-Page Flow)
+
+Enabled via `order.fast_mode: true` (highest priority — all other `order.*` keys become ineffective). Every operation converges onto the broker's 双向委托 (two-way order entry) single page: buy and sell forms side by side (buy-side controls identical to the legacy F1 page), bottom tabs 持仓(F6)/成交(F7)/委托(F8) for one-click queries, and 全撤/撤买/撤卖 cancel buttons on the same page — eliminating F1/F2 page switches, F4 tree navigation, and repeated full-tree traversals.
+
+| Endpoint | Purpose | Measured |
+|------|------|---------|
+| `POST /orders` (limit) | Fast order, response carries `routed:"fast"` | ~2.5s |
+| `POST /fast/orders` | Same (explicit fast entry, no idempotency) | ~2.5s |
+| `POST /fast/cancel` | Same-page cancel (`type`: A all / X buy / C sell) | ~0.5s |
+| `GET /fast/positions` · `/fast/trades` | F6 positions / F7 fills | ~2.5-3s |
+| `GET /fast/orders` | F8 **cancellable orders only** (live, incl. contract no.) | ~2.2-3.4s |
+| `GET /fast/orders/full` | F4 当日委托 page — **full day's orders (incl. cancelled)** | ~7.7s |
+| `GET /fast/balance` | F4 资金股票 page balance read (no captcha) | ~5s |
+| `POST /fast/home` | Bootstrap: navigate to the bidir page + enforce checkboxes | ~6-8s |
+
+### Prerequisites (Manual One-Time Adjustment)
+
+**Before running the fast mode, manually drag the broker window width so that BOTH the buy and sell components on the 双向委托 page are fully visible on screen.** The fast mode clicks and reads at the controls' current positions; a sell form pushed off-screen means clicks land nowhere. With `fast_mode` enabled the gateway auto-runs the bootstrap at startup (navigate to the bidir page + enforce three checkboxes: 只显示可撤委托 = checked, 买卖代码联动 / 委托后不清空 = unchecked); with `fast_mode=false` the bootstrap never runs (strict isolation — the client keeps its default F1 starting state).
+
+### Semantics and Precautions
+
+- **Recommended way to simulate market orders**: market orders never take the fast path (they fall back to the slow legacy flow, and the sim account rejects market orders anyway). Instead, **place limit orders at the limit-up price for buys and the limit-down price for sells** — instant full fills, no mode switching, entirely inside the fast path. Limit prices = today's previous close × 1.1 / × 0.9, computed from the LATEST previous close — a stale one yields an out-of-range price that the client rejects with a popup.
+- **Meaning of `submitted: true`** = "buyable/sellable gate passed + submit clicked", **not "order registered"**. A client popup rejection (e.g. out-of-range price) surfaces as a phantom success; the TaskQueue's pre-task leftover-dialog sweep auto-closes it safely (evidence archived, then cancel — never clicks OK) without blocking subsequent operations. Verify actual registration via `/fast/orders` (live) or `/fast/orders/full` (full day).
+- **The only submit gate**: buyable/sellable must read as a number ≥ 0, otherwise `SERVER_UNAVAILABLE` (the fresh form fills slowly — the first attempt may be rejected; simply retry). No name-linkage check, no trading-hours precheck; the `/orders` Idempotency-Key idempotency still applies on the fast branch.
+- **F8 shows cancellable orders only**: cancelled orders vanish from the list immediately; for the full day's list (incl. cancelled) always use `/fast/orders/full`.
+- **Page-switch discipline**: F1/F2 are strictly forbidden in fast mode (they jump pages globally). After a legacy endpoint or market-order fallback the client stays on F1 — fast tasks detect it and navigate back to the bidir page automatically.
+- **Captcha**: grid copies on in-page queries always trigger the captcha (gateway OCR handles it, ~1.1s); order placement does not.
+- **Checkbox states persist for the client session**: the bootstrap runs once at gateway startup; if the checkboxes were changed manually in the client, restart the gateway or call `POST /fast/home` to restore the target state.
 
 ## API
 

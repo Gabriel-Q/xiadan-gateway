@@ -71,11 +71,17 @@ DEFAULT_CONFIG = {
         "copy_method": "keyboard"  # keyboard=Ctrl+C 键盘法（默认）; message=WM_COMMAND 消息级复制（实验）
     },
     "order": {
+        "fast_mode": False,               # 极速模式总开关（优先级最高）：开启后 /orders
+                                          # 限价单走双向委托页极速路径，其余 order.* 配置全部
+                                          # 失效（不截获横幅/不回补/不对账/无名称联动校验/无时段
+                                          # 预检，唯一门控=可买/可卖≥0）；市价单仍走传统路径
         "capture_entrust_no": False,      # 下单后截获右下角横幅回传委托号（模板匹配，零额外依赖）
         "entrust_no_timeout_seconds": 5.0,  # 横幅截获超时（成功即返回，超时仅拖慢失败路径）
         "recover_entrust_no": True,       # 横幅截获失败时按「点击时刻秒桶窗口[-1,+2]×参数四元组」反查当日委托回补（仅失败路径多一次查询）
         "verify_entrust_no": False,       # 下单成功拿到委托号后自动查当日委托对账（追加一次查询耗时）
         "verify_code_input": True,        # 输入代码后校验证券名称联动（cid=1036 非空=代码被客户端接受）
+        "verify_buyable_ready": True,     # 提交前校验可买/可卖数值非空（异步填充就绪门控）
+        "verify_buyable_ready_wait_seconds": 3.0,  # 门控读空时的轮询预算（秒）
         "reject_outside_trading_hours": False  # 非交易时段入口快速失败（默认关闭，保留收盘后挂单行为）
     },
     "logging": {
@@ -208,10 +214,14 @@ class AppConfig(Singleton):
 
     def get_order_config(self) -> dict:
         return self._config.get("order", {
+            "fast_mode": False,
             "capture_entrust_no": False,
             "entrust_no_timeout_seconds": 5.0,
+            "recover_entrust_no": True,
             "verify_entrust_no": False,
-            "verify_code_input": True
+            "verify_code_input": True,
+            "verify_buyable_ready": True,
+            "verify_buyable_ready_wait_seconds": 3.0,
         })
 
     def get_logging_config(self) -> dict:
@@ -320,6 +330,9 @@ class AppConfig(Singleton):
             )
 
         ocfg = self._config.get("order") or {}
+        v = ocfg.get("fast_mode")
+        if v is not None and not isinstance(v, bool):
+            errors.append(f"order.fast_mode 必须是布尔值，当前: {v!r}")
         v = ocfg.get("entrust_no_timeout_seconds")
         if v is not None:
             try:

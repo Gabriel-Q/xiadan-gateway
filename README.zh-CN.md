@@ -21,6 +21,7 @@
 - [快速开始](#快速开始)（含[前置准备：券商软件设置](#前置准备券商软件设置) / [服务器无人值守运行（推荐 VNC，RDP 亦可）](#服务器无人值守运行推荐-vncrdp-亦可)）
 - [上线前必改（安全检查）](#上线前必改安全检查)
 - [配置](#配置)
+- [极速模式（双向委托单页流）](#极速模式双向委托单页流)：[使用前提（手动一次性调整）](#使用前提手动一次性调整) / [语义与注意事项](#语义与注意事项)
 - [API 接口](#api-接口)：[响应格式](#响应格式) / [错误码](#错误码) / [接口总表](#接口总表) / [下单](#post-orders--下单) / [委托状态与成交回报](#get-ordersentrust_nostatus--委托状态与成交回报) / [撤单](#post-orderscancel-all--撤单) / [辅助接口](#辅助接口) / [调用方 timeout 配置](#调用方-timeout-配置)
 - [MCP 服务（agent 接入）](#mcp-服务agent-接入)
 - [Skill 接入（任意 agent）](#skill-接入任意-agent)
@@ -172,6 +173,7 @@ uv run python main.py --dev       # 开发模式（热加载）
   "alerts": { "webhook_url": "", "format": "generic", "timeout_seconds": 5 },
   "ocr": { "warmup_on_start": true, "max_retry": 3, "ddddocr_enabled": false },
   "query": { "copy_method": "keyboard" },
+  "order": { "fast_mode": false },
   "auth": { "enabled": false, "token": "" },
   "logging": { "level": "INFO", "file": "logs/app.log", "screenshot_dir": "logs/screenshots" }
 }
@@ -189,6 +191,7 @@ uv run python main.py --dev       # 开发模式（热加载）
 | `alerts.format` | generic | `generic`=完整结构化 JSON（自建 receiver）；`text`=企业微信群机器人/钉钉自定义机器人文本格式；`feishu`=飞书/Lark 自定义机器人文本格式 |
 | `alerts.timeout_seconds` | 5 | webhook POST 超时（秒）。后台 daemon 线程发送，不阻塞交易路径 |
 | `ocr.max_retry` | 3 | 验证码识别最大重试次数 |
+| `order.fast_mode` | false | **极速模式总开关（优先级最高）**：开启后 `POST /orders` 限价单直接走双向委托页单页极速路径（下单 ~2.5s、撤单 ~0.5s 经 `/fast/cancel`）；其余 `order.*` 配置全部失效（不截获横幅/不回补/不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖读数 ≥0）。市价单不走极速路径，仍回落传统流程。配套端点：`/fast/home`、`/fast/orders`、`/fast/cancel`、`/fast/positions|trades|orders`（F8 仅可撤）、`/fast/orders/full`、`/fast/balance` |
 | `order.reject_outside_trading_hours` | false | 下单入口交易时段预检（工作日 + 法定节假日 + 9:15-11:30 / 13:00-15:00 粗判，节假日历三级降级：chinesecalendar → 深交所官方月度日历（当年 12 个月一次性拉取并缓存到 `data/trading_calendar/`，缓存齐全后离线读取）→ 仅周末/工作日粗判，节假日由券商报错兜底）。开启后非交易时段秒级返回 `OUTSIDE_TRADING_HOURS`，免走完整 UI 流程 ~11s；默认关闭以保留收盘后挂单行为 |
 | `order.capture_entrust_no` | false | 下单成功后从右下角成功横幅截获合同编号（后台抓屏 + 模板 OCR，句号锚定——券商编号长度不一）。截获失败返回 `null`；下单成败与之无关（见响应说明）。成功路径加 ~1s，失败路径最多 5s 截获超时。配合 `order.verify_entrust_no` 对账使用。会话形态差异：console 挂接（VNC）与 RDP 挂接态直接命中（2026-10-10 实测）；RDP 断开态无法可靠读取——高度门控拒绝读取，下单自动落回 `order.recover_entrust_no` |
 | `order.entrust_no_timeout_seconds` | 5.0 | 横幅截获等待超时（秒）；成功即返回，仅拖慢失败路径 |
@@ -204,6 +207,35 @@ uv run python main.py --dev       # 开发模式（热加载）
 | `logging.level` | INFO | 日志级别（排查 UIA 控件失效等问题时改 `DEBUG`，热生效无需重启） |
 
 > 修改配置后 `POST /admin/reload-config` 热重载（部分路径变更需重启）。超时值参考最新性能实测（2026-08 模拟盘：下单最坏 ~8s、查询最坏 ~12s 含失败重试，30s 提供 2.5-3.5× 余量；卡死任务更快触发看门狗恢复、调用方更快失败）。
+
+## 极速模式（双向委托单页流）
+
+`order.fast_mode: true` 开启（优先级最高，开启后其余 `order.*` 配置全部失效）。全部操作收敛到券商「双向委托」单页：买卖双表单同屏（买侧控件与传统 F1 页一致）、底部 持仓(F6)/成交(F7)/委托(F8) 标签即点即查、全撤/撤买/撤卖同页撤单——省去 F1/F2 切页、F4 树导航与重复全树遍历。
+
+| 端点 | 作用 | 实测耗时 |
+|------|------|---------|
+| `POST /orders`（限价） | 极速下单，响应带 `routed:"fast"` | ~2.5s |
+| `POST /fast/orders` | 同上（显式极速入口，无幂等） | ~2.5s |
+| `POST /fast/cancel` | 同页撤单（`type`: A 全撤 / X 撤买 / C 撤卖） | ~0.5s |
+| `GET /fast/positions` · `/fast/trades` | F6 持仓 / F7 成交 | ~2.5-3s |
+| `GET /fast/orders` | F8 **可撤委托**（仅活单，含合同编号） | ~2.2-3.4s |
+| `GET /fast/orders/full` | F4「当日委托」页**全量委托（含已撤）** | ~7.7s |
+| `GET /fast/balance` | F4「资金股票」页读余额（无验证码） | ~5s |
+| `POST /fast/home` | 引导：回双向委托页 + 强制勾选框状态 | ~6-8s |
+
+### 使用前提（手动一次性调整）
+
+**运行极速模式前，请手动拖动券商软件窗口宽度，保证「双向委托」页面中买入和卖出两组件完整显示在屏幕上。**极速模式直接按控件当前位置落点击与读数，卖侧表单被挤出屏幕外时点击会落空。开启 `fast_mode` 后网关启动即自动执行引导（跳转双向委托页 + 强制三个勾选框：只显示可撤委托 = 勾选，买卖代码联动 / 委托后不清空 = 未勾）；`fast_mode=false` 时引导完全不执行（严格隔离，客户端保持默认 F1 起始态）。
+
+### 语义与注意事项
+
+- **模拟市价单的推荐做法**：市价单不走极速路径（自动回落传统慢路径，且模拟盘不支持市价）。推荐**买入挂涨停价、卖出挂跌停价的限价单**来模拟市价——立即全量成交、不经模式切换，全程留在极速路径内。涨跌停价 = 当日昨收 × 1.1 / × 0.9，务必用当日最新昨收计算——过期昨收会算出越界价，被客户端弹窗拦截。
+- **`submitted: true` 的语义** = 「可买/可卖门控通过 + 提交已点击」，**不等于委托已登记**。客户端弹窗拦截（如价格越界）表现为幻影成功；TaskQueue 的任务前清扫会自动安全关闭残留弹窗（先存档再取消，绝不点确认），不阻塞后续操作。委托是否落账以 `/fast/orders`（活单）或 `/fast/orders/full`（全量）复核为准。
+- **唯一提交门控**：可买/可卖数值为 ≥0 的数字，否则报 `SERVER_UNAVAILABLE`（新表单异步填充偏慢，首单可能被拦，原样重试即可）。无名称联动校验、无时段预检；`/orders` 的 Idempotency-Key 幂等在极速分支同样生效。
+- **F8 只见可撤委托**：撤掉的委托即时从列表消失；查全量（含已撤）一律走 `/fast/orders/full`。
+- **页面切换纪律**：极速模式严禁 F1/F2（会全局跳页）。传统端点/市价回落跑完后页面停在 F1，极速任务检测到后会自动导航回双向委托页。
+- **验证码**：页内查询的表格复制必弹验证码（网关 OCR 自动处理，~1.1s）；下单不触发。
+- **勾选框状态客户端会话内持久**：引导只在网关启动时执行一次；若人工在客户端上改动过勾选框，重启网关或 `POST /fast/home` 即可恢复目标状态。
 
 ## API 接口
 

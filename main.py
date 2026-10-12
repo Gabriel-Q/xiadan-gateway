@@ -12,6 +12,7 @@
 import signal
 import sys
 import threading
+import time
 
 import win32api
 import win32event
@@ -162,6 +163,29 @@ def main():
         logger.info(f"看门狗超时: {watchdog_timeout}s, 推荐客户端 timeout: {watchdog_timeout + 10}s")
         logger.info(f"服务器: waitress (生产级 WSGI)")
         logger.info("-" * 60)
+
+        # 6.5 极速模式启动引导：默认跳转双向委托页 + 三勾选框确保未勾选。
+        # 后台线程延迟 3s（让开客户端登录绘制期），经 TaskQueue 串行执行；
+        # 失败不阻塞服务——每个 /fast 请求入口都有 ensure_home 懒重试。
+        def _fast_bootstrap():
+            time.sleep(3)
+            try:
+                # 严格隔离：order.fast_mode=false 时引导完全不执行，
+                # 不触碰客户端（传统流程保持默认 F1 起始态）
+                if not AppConfig().get_order_config().get("fast_mode"):
+                    logger.info("极速模式未启用（order.fast_mode=false），跳过启动引导")
+                    return
+                from src.api.task_queue import TaskQueue
+                from src.services.fast_trader import FastTrader
+                TaskQueue.get_instance().submit(
+                    func=lambda: FastTrader().bootstrap(),
+                    task_name="fast_bootstrap", params={}, timeout=30)
+            except Exception as e:
+                logger.warning(f"极速模式启动引导失败（首个请求会重试）: {e}")
+
+        threading.Thread(target=_fast_bootstrap, daemon=True,
+                         name="fast-bootstrap").start()
+        logger.info("极速模式: /fast/* 已就绪（启动引导已排队）")
 
         # 7. 注册优雅关闭信号处理
         def _graceful_shutdown(signum, frame):

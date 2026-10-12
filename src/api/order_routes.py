@@ -257,6 +257,27 @@ def xiadan():
     _start = time.time()
     try:
         order_timeout = config.get_task_queue_config().get("watchdog_timeout_seconds", 30)
+        # 极速模式总开关（order.fast_mode，优先级最高）：开启时限价单直接走
+        # 双向委托页极速路径，其余 order.* 配置全部失效（不截获横幅/不回补/
+        # 不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖≥0）；
+        # 市价单不走极速路径，仍回落传统 Trader（用户定版 2026-10-12）。
+        fast_mode = bool(config.get_order_config().get("fast_mode"))
+        if fast_mode and price_type == "limit":
+            from src.core.ocr import OcrService as _Ocr
+            from src.services.fast_trader import FastTrader as _Fast
+            result = task_queue.submit(
+                func=lambda: _Fast(_Ocr.get_instance()).place_order(
+                    code=code, status=status, price=price, amount=amount),
+                task_name="fast_place_order",
+                params={
+                    "code": code, "status": status, "amount": amount,
+                    "price": price, "price_type": price_type, "confirm": confirm
+                },
+                timeout=order_timeout)
+            result["routed"] = "fast"
+            return success_response(result, request_id,
+                                    duration_ms=(time.time() - _start) * 1000)
+
         result = task_queue.submit(
             func=lambda: _get_trader().place_order(
                 code=code, status=status, amount=amount,
@@ -269,8 +290,10 @@ def xiadan():
             },
             timeout=order_timeout
         )
-        result = _maybe_recover_entrust_no(config, task_queue, result)
-        result = _maybe_verify_entrust_no(config, task_queue, result)
+        if not fast_mode:
+            # fast_mode 下其余 order.* 配置全部失效：不回补、不对账
+            result = _maybe_recover_entrust_no(config, task_queue, result)
+            result = _maybe_verify_entrust_no(config, task_queue, result)
         return success_response(result, request_id, duration_ms=(time.time() - _start) * 1000)
     except Exception as e:
         # 任务可能仍在执行/排队（看门狗超时、队列超时）时保留幂等记录，

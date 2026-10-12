@@ -433,6 +433,12 @@ class TaskQueue(Singleton):
         用于排查性能异常：该跳过没跳过（多余重置）或不该跳过却跳了
         （窗口状态可能被上笔失败污染）。
         """
+        # 极速模式任务一律跳过：重置的 ESC×5 会把客户端全局打回 F1 买入页，
+        # 且按键异步生效——曾实锤在 fast 任务填表中途切页（2026-10-12）。
+        # 极速模式自管页面状态（双向委托页导航树点击），不需要基准态复位；
+        # 跳过路径仍保留出屏位置自愈（_ensure_window_in_workarea，无按键）。
+        if task.name.startswith("fast_"):
+            return True
         last = self._last_task_info
         if last is None:
             self.logger.debug(

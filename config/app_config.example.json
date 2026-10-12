@@ -38,6 +38,9 @@
   "query": {
     "copy_method": "keyboard"
   },
+  "order": {
+    "fast_mode": false
+  },
   "logging": {
     "level": "INFO",
     "file": "logs/app.log",

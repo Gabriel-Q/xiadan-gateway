@@ -22,6 +22,10 @@
     "confirm_timeout_seconds": 10,
     "session_gate_enabled": true
   },
+  "api": {
+    "server_threads": 16,
+    "business_max_concurrent": 12
+  },
   "idempotency": {
     "order_dedup_window_seconds": 60
   },

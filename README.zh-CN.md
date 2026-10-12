@@ -169,6 +169,7 @@ uv run python main.py --dev       # 开发模式（热加载）
     "query_timeout_seconds": 30,
     "confirm_timeout_seconds": 10
   },
+  "api": { "server_threads": 16, "business_max_concurrent": 12 },
   "idempotency": { "order_dedup_window_seconds": 60 },
   "alerts": { "webhook_url": "", "format": "generic", "timeout_seconds": 5 },
   "ocr": { "warmup_on_start": true, "max_retry": 3, "ddddocr_enabled": false },
@@ -186,6 +187,8 @@ uv run python main.py --dev       # 开发模式（热加载）
 | `task_queue.query_timeout_seconds` | 30 | 查询操作超时（秒） |
 | `task_queue.confirm_timeout_seconds` | 10 | 确认/按键操作超时（秒） |
 | `task_queue.max_size` | 50 | 队列最大长度 |
+| `api.server_threads` | 16 | waitress 工作线程数。2026-10-12 过载压测实锤：旧值硬编码 4，任务风暴下业务请求线程全部停泊在队列同步等待上，管理端点（`/health`、`/queue/status`）饿死 15s+ |
+| `api.business_max_concurrent` | 12 | 业务请求并发上限（准入闸门）：超限请求毫秒级返回 `QUEUE_FULL`（不停泊、语义与队列满一致），差额线程永久保留给管理端点——过载期间 `/health`、`/queue/status`、`/admin/reload-config` 仍实时可观测。启动校验：必须 ≤ `server_threads` - 2。两道闸关系：本闸门限 HTTP 并发（外层），`task_queue.max_size` 限任务积压（内层），常规配置下本闸门先触发 |
 | `idempotency.order_dedup_window_seconds` | 60 | 同 key 重试拦截窗（秒），与推荐客户端超时 40s 校准 |
 | `alerts.webhook_url` | 空 | 告警外推 webhook（**空=禁用**）：连续任务失败≥3、下单弹窗行为漂移、任务看门狗超时时后台 POST JSON；支持热更新 |
 | `alerts.format` | generic | `generic`=完整结构化 JSON（自建 receiver）；`text`=企业微信群机器人/钉钉自定义机器人文本格式；`feishu`=飞书/Lark 自定义机器人文本格式 |

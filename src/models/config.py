@@ -174,6 +174,21 @@ class AppConfig(Singleton):
         """获取 HTTP 服务监听端口"""
         return int(self._config.get("port", 5000))
 
+    def get_api_config(self) -> dict:
+        """HTTP 服务并发配置（waitress 线程池 / 业务并发闸门）
+
+        server_threads: waitress 工作线程数。2026-10-12 过载压测实锤：
+        硬编码 4 线程在任务风暴下整体停泊在队列同步等待上，管理端点
+        （/health、/queue/status）饿死 15s+。business_max_concurrent:
+        业务请求并发上限（api.admission_gate 闸门），差额线程永久保留
+        给管理端点；validate 校验至少保留 2 线程。
+        """
+        # or-默认而非 get-默认：配置里显式 "api": null 时 key 存在值为 None
+        return self._config.get("api") or {
+            "server_threads": 16,
+            "business_max_concurrent": 12,
+        }
+
     def get_auth_config(self) -> dict:
         """获取认证配置"""
         return self._config.get("auth", {"enabled": False, "token": ""})
@@ -275,6 +290,24 @@ class AppConfig(Singleton):
                 errors.append(f"port 必须在 1-65535 之间，当前: {port}")
         except (TypeError, ValueError):
             errors.append(f"port 必须是数字，当前: {self._config.get('port')!r}")
+
+        api_cfg = self._config.get("api") or {}
+        threads = api_cfg.get("server_threads")
+        if threads is not None and (not isinstance(threads, int)
+                                    or isinstance(threads, bool) or threads < 2):
+            errors.append(f"api.server_threads 必须是 ≥2 的整数，当前: {threads!r}")
+        business = api_cfg.get("business_max_concurrent")
+        if business is not None and (not isinstance(business, int)
+                                     or isinstance(business, bool) or business < 1):
+            errors.append(
+                f"api.business_max_concurrent 必须是 ≥1 的整数，当前: {business!r}")
+        elif (isinstance(threads, int) and not isinstance(threads, bool)
+                and threads >= 2 and isinstance(business, int)
+                and not isinstance(business, bool) and business > threads - 2):
+            errors.append(
+                f"api.business_max_concurrent({business}) 必须不超过 "
+                f"api.server_threads({threads}) - 2（至少保留 2 线程给管理端点）"
+            )
 
         qcfg = self._config.get("task_queue") or {}
         for field in ("watchdog_timeout_seconds", "query_timeout_seconds",

@@ -150,6 +150,9 @@ def main():
         auth_config = config.get_auth_config()
         auth_enabled = auth_config.get("enabled", False) and bool(auth_config.get("token"))
 
+        # HTTP 服务并发配置（waitress 线程池 / 业务闸门，日志与 serve 共用）
+        api_config = config.get_api_config()
+
         logger.info("-" * 60)
         logger.info("xiadan-gateway 启动完成")
         logger.info(f"HTTP 服务: http://{host}:{port}")
@@ -161,7 +164,10 @@ def main():
         logger.info(f"撤单接口: POST http://{host}:{port}/orders/cancel-all")
         logger.info(f"队列状态: GET  http://{host}:{port}/queue/status")
         logger.info(f"看门狗超时: {watchdog_timeout}s, 推荐客户端 timeout: {watchdog_timeout + 10}s")
-        logger.info(f"服务器: waitress (生产级 WSGI)")
+        logger.info(
+            f"服务器: waitress (线程={api_config.get('server_threads', 16)}, "
+            f"业务并发上限={api_config.get('business_max_concurrent', 12)}, "
+            f"差额预留管理端点)")
         logger.info("-" * 60)
 
         # 6.5 极速模式启动引导：默认跳转双向委托页 + 三勾选框确保未勾选。
@@ -221,8 +227,11 @@ def main():
         signal.signal(signal.SIGTERM, _graceful_shutdown)
 
         # 8. 启动 waitress 生产服务器
+        # server_threads 必须大于业务并发上限（差额留给管理端点，见
+        # api.admission_gate）；配合业务闸门防任务风暴饿死管理面
         from waitress import serve
-        serve(app, host=host, port=port, threads=4,
+        serve(app, host=host, port=port,
+              threads=int(api_config.get("server_threads", 16)),
               channel_timeout=watchdog_timeout + 15)
 
     finally:

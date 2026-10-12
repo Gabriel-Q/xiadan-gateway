@@ -680,8 +680,27 @@ class FastTrader:
             time.sleep(0.1)
 
     @staticmethod
-    def _parse_tsv(data: str) -> tuple:
-        """TSV → (表头列表, 数据行列表)；只有表头 = 合法空列表"""
+    def _is_noise_row(row: dict) -> bool:
+        """整行皆空/零 → OCR 网格空白行噪声（2026-10-12 压测实锤：F4
+        全量委托 12 行中 3 行为全空行，污染 count 与逐单核对）。真实
+        数据行必有代码/名称/时间/合同编号等非零内容，不可能整行为空
+        或零。判据：任一单元格为非空非零值即真实行（数值可被 float
+        解析且 ≠0，或为非数值文本）；全部单元格为空串或零 → 噪声。"""
+        for v in row.values():
+            s = (v or "").strip()
+            if not s or s in ("-", "--", "---"):
+                continue  # 空串 / 横杠占位（部分网格渲染空值的形式）
+            try:
+                if float(s) != 0:
+                    return False
+            except ValueError:
+                return False
+        return True
+
+    @classmethod
+    def _parse_tsv(cls, data: str) -> tuple:
+        """TSV → (表头列表, 数据行列表)；只有表头 = 合法空列表；
+        整行空/零的 OCR 噪声行丢弃（_is_noise_row）"""
         lines = [ln for ln in data.replace("\r\n", "\n").split("\n") if ln.strip()]
         if not lines:
             return [], []
@@ -689,6 +708,8 @@ class FastTrader:
         rows = []
         for ln in lines[1:]:
             cells = ln.split("\t")
-            rows.append({header[i]: cells[i] if i < len(cells) else ""
-                         for i in range(len(header))})
+            row = {header[i]: cells[i] if i < len(cells) else ""
+                   for i in range(len(header))}
+            if not cls._is_noise_row(row):
+                rows.append(row)
         return header, rows

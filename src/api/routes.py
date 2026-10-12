@@ -8,10 +8,11 @@
 """
 import hmac
 
-from flask import Flask, request
+from flask import Flask, g, request
 
 from src.exceptions import ErrorCode
 from src.constants import TRADING_WINDOW_TITLE
+from src.api.admission_gate import BusinessGate
 from src.api.response import (
     generate_request_id,
     success_response, error_response
@@ -21,6 +22,10 @@ from src.models.config import AppConfig
 from src.utils.logger import Logger
 from src.utils.session_state import session_health
 from src.services.broker_link import read_broker_link
+
+# 管理端点：不入队、毫秒级返回，绕过业务并发闸门（永不被任务风暴饿死，
+# 见 src/api/admission_gate 模块 docstring——压测实锤的管理面饿死问题）
+MANAGEMENT_ENDPOINTS = {"/health", "/queue/status", "/admin/reload-config"}
 
 
 def create_app() -> Flask:
@@ -79,6 +84,34 @@ def create_app() -> Flask:
                 return error_response(
                     ErrorCode.AUTH_FAILED, "认证 token 无效", generate_request_id()
                 )
+
+    # 业务并发准入闸门：物理线程池一分为二——业务请求并发封顶，剩余
+    # waitress 线程永久保留给管理端点（超限立即 QUEUE_FULL，不停泊）。
+    # 注册在认证之后：认证失败的请求不消耗业务并发额度。
+    business_gate = BusinessGate(
+        int(config.get_api_config().get("business_max_concurrent", 12)))
+
+    @app.before_request
+    def _admission_gate():
+        if request.path in MANAGEMENT_ENDPOINTS:
+            return None
+        if not business_gate.try_acquire():
+            return error_response(
+                ErrorCode.QUEUE_FULL,
+                f"业务并发已达上限（{business_gate.max_concurrent}），"
+                f"请稍后重试（管理端点不受影响）",
+                generate_request_id(),
+                "沿用 QUEUE_FULL 退避重试策略；GET /queue/status 查看队列状态"
+            )
+        # teardown_request 在任何退出路径（含异常）都执行，g 标记保证
+        # 与成功 acquire 严格配对释放
+        g.business_gate_acquired = True
+        return None
+
+    @app.teardown_request
+    def _release_business_gate(exc):
+        if g.pop("business_gate_acquired", False):
+            business_gate.release()
 
     # 注册系统路由
     _register_system_routes(app)

@@ -169,6 +169,7 @@ Copy `config/app_config.example.json` to `config/app_config.json` and edit `trad
     "query_timeout_seconds": 30,
     "confirm_timeout_seconds": 10
   },
+  "api": { "server_threads": 16, "business_max_concurrent": 12 },
   "idempotency": { "order_dedup_window_seconds": 60 },
   "alerts": { "webhook_url": "", "format": "generic", "timeout_seconds": 5 },
   "ocr": { "warmup_on_start": true, "max_retry": 3, "ddddocr_enabled": false },
@@ -186,6 +187,8 @@ Copy `config/app_config.example.json` to `config/app_config.json` and edit `trad
 | `task_queue.query_timeout_seconds` | 30 | Query operation timeout (seconds) |
 | `task_queue.confirm_timeout_seconds` | 10 | Confirm/keypress operation timeout (seconds) |
 | `task_queue.max_size` | 50 | Max queue length |
+| `api.server_threads` | 16 | waitress worker threads. 2026-10-12 overload stress test: the old hardcoded value of 4 let every business request thread park on the queue's synchronous wait during a task storm, starving the management endpoints (`/health`, `/queue/status`) for 15s+ |
+| `api.business_max_concurrent` | 12 | Business-request concurrency cap (admission gate): over-limit requests get an immediate `QUEUE_FULL` in milliseconds (no parking; same semantics as queue-full), and the remaining threads are permanently reserved for the management endpoints — `/health`, `/queue/status`, `/admin/reload-config` stay observable in real time during overload. Startup validation: must be ≤ `server_threads` - 2. Two gates: this one caps HTTP concurrency (outer), `task_queue.max_size` caps task backlog (inner); under normal config this gate trips first |
 | `idempotency.order_dedup_window_seconds` | 60 | Same-key retry-block window (seconds), calibrated to the recommended 40s client timeout |
 | `alerts.webhook_url` | empty | Alert webhook (**empty=disabled**): consecutive task failures ≥3, order-dialog behavior drift, and watchdog timeouts POST JSON in the background; hot-reloadable |
 | `alerts.format` | generic | `generic`=full structured JSON (custom receiver); `text`=WeCom group-bot / DingTalk custom-bot text format; `feishu`=Feishu/Lark custom-bot text format |

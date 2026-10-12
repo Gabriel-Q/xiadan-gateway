@@ -263,6 +263,14 @@ def _register_trading_tools() -> None:
         不代表失败：confirmed=true+null=横幅可见但读数失败（已提交、编
         号未知，网关已自动回补），勿重试。
 
+        极速模式（网关 order.fast_mode=true，2026-10-12 起）: 限价单自动
+        改走极速路径（~2.5s，响应带 routed="fast"），字段变为
+        ready（可买/可卖读数）+submitted，**没有 confirmed/entrust_no**
+        （横幅截获/回补/对账不生效）。submitted=true 仅表示「门控通过+
+        提交已点击」，≠委托已登记——客户端弹窗拦截（如价格越界）表现
+        为幻影成功，落账以 get_today_orders() 复核为准。市价单不走极速
+        路径，仍回落传统流程（响应含 confirmed）。
+
         Args:
             code: 6 位证券代码，如 "601991"
             side: buy=买入，sell=卖出

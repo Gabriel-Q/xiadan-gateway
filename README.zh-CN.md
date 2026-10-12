@@ -194,7 +194,7 @@ uv run python main.py --dev       # 开发模式（热加载）
 | `alerts.format` | generic | `generic`=完整结构化 JSON（自建 receiver）；`text`=企业微信群机器人/钉钉自定义机器人文本格式；`feishu`=飞书/Lark 自定义机器人文本格式 |
 | `alerts.timeout_seconds` | 5 | webhook POST 超时（秒）。后台 daemon 线程发送，不阻塞交易路径 |
 | `ocr.max_retry` | 3 | 验证码识别最大重试次数 |
-| `order.fast_mode` | false | **极速模式总开关（优先级最高）**：开启后 `POST /orders` 限价单直接走双向委托页单页极速路径（下单 ~2.5s、撤单 ~0.5s 经 `/fast/cancel`）；其余 `order.*` 配置全部失效（不截获横幅/不回补/不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖读数 ≥0）。市价单不走极速路径，仍回落传统流程。配套端点：`/fast/home`、`/fast/orders`、`/fast/cancel`、`/fast/positions|trades|orders`（F8 仅可撤）、`/fast/orders/full`、`/fast/balance` |
+| `order.fast_mode` | false | **极速模式总开关（优先级最高）**：开启后①`POST /orders` 限价单直接走双向委托页单页极速路径（下单 ~2.5s）；②传统查询端点 `/account/balance`、`/positions`、`/trades/today` 在路由层映射极速页内查询（~2-2.5s，响应结构不变），`/orders/pending` 语义归正为在途委托（=F8 可撤），`/orders/cancel-all` 的 A/X/C 映射同页直点（~0.5s，`L` 报 `VALIDATION_ERROR`）；其余 `order.*` 配置全部失效（不截获横幅/不回补/不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖读数 ≥0；极速映射查询分支无 `BROKER_DISCONNECTED` 作废语义）。市价单不走极速路径，仍回落传统流程。关闭时传统端点行为与映射引入前完全一致（严格隔离）。全量委托两态统一走 `GET /orders/full`。配套端点：`/fast/home`、`/fast/orders`、`/fast/cancel`、`/fast/positions|trades|orders`（F8 仅可撤）、`/fast/orders/full`、`/fast/balance` |
 | `order.reject_outside_trading_hours` | false | 下单入口交易时段预检（工作日 + 法定节假日 + 9:15-11:30 / 13:00-15:00 粗判，节假日历三级降级：chinesecalendar → 深交所官方月度日历（当年 12 个月一次性拉取并缓存到 `data/trading_calendar/`，缓存齐全后离线读取）→ 仅周末/工作日粗判，节假日由券商报错兜底）。开启后非交易时段秒级返回 `OUTSIDE_TRADING_HOURS`，免走完整 UI 流程 ~11s；默认关闭以保留收盘后挂单行为 |
 | `order.capture_entrust_no` | false | 下单成功后从右下角成功横幅截获合同编号（后台抓屏 + 模板 OCR，句号锚定——券商编号长度不一）。截获失败返回 `null`；下单成败与之无关（见响应说明）。成功路径加 ~1s，失败路径最多 5s 截获超时。配合 `order.verify_entrust_no` 对账使用。会话形态差异：console 挂接（VNC）与 RDP 挂接态直接命中（2026-10-10 实测）；RDP 断开态无法可靠读取——高度门控拒绝读取，下单自动落回 `order.recover_entrust_no` |
 | `order.entrust_no_timeout_seconds` | 5.0 | 横幅截获等待超时（秒）；成功即返回，仅拖慢失败路径 |
@@ -215,9 +215,15 @@ uv run python main.py --dev       # 开发模式（热加载）
 
 `order.fast_mode: true` 开启（优先级最高，开启后其余 `order.*` 配置全部失效）。全部操作收敛到券商「双向委托」单页：买卖双表单同屏（买侧控件与传统 F1 页一致）、底部 持仓(F6)/成交(F7)/委托(F8) 标签即点即查、全撤/撤买/撤卖同页撤单——省去 F1/F2 切页、F4 树导航与重复全树遍历。
 
+**传统端点自动映射（2026-10-12 扩展）**：开启极速模式后，传统端点在路由层映射到极速流，URL 契约与响应结构不变——`GET /account/balance`、`/positions`、`/trades/today` 走页内查询（~2-2.5s，`/positions` 丢弃空占位列）；`GET /orders/pending` 语义归正为**在途委托**（=F8 可撤，仅活单）；`POST /orders/cancel-all` 的 A/X/C 走同页直点（~0.5s，`L` 撤最后极速不支持，报 `VALIDATION_ERROR`）。`fast_mode=false` 时上述端点行为与映射引入前完全一致（严格隔离）。**全量委托两态统一走 `GET /orders/full`**。注意：极速映射分支无断连作废语义（`BROKER_DISCONNECTED` 不生效）——手动开启极速即接受此差异。
+
 | 端点 | 作用 | 实测耗时 |
 |------|------|---------|
 | `POST /orders`（限价） | 极速下单，响应带 `routed:"fast"` | ~2.5s |
+| `GET /account/balance` · `/positions` · `/trades/today`（极速映射） | 传统端点走页内查询，响应结构不变 | ~2-2.5s |
+| `GET /orders/pending`（极速映射） | 在途委托（=F8 可撤，仅活单） | ~2.2-3.4s |
+| `GET /orders/full` | 当日全量委托（两态一致；极速走 F4 页） | ~4s（极速）/ 3~5s（传统） |
+| `POST /orders/cancel-all`（极速映射） | 撤单 type=A/X/C 同页直点；`L` 报 `VALIDATION_ERROR` | ~0.5s |
 | `POST /fast/orders` | 同上（显式极速入口，无幂等） | ~2.5s |
 | `POST /fast/cancel` | 同页撤单（`type`: A 全撤 / X 撤买 / C 撤卖） | ~0.5s |
 | `GET /fast/positions` · `/fast/trades` | F6 持仓 / F7 成交 | ~2.5-3s |
@@ -314,10 +320,11 @@ uv run python main.py --dev       # 开发模式（热加载）
 | GET | `/account/balance` | 资金余额 | ✓ | 40s |
 | GET | `/positions` | 持仓查询 | ✓ | 40s |
 | GET | `/trades/today` | 今日成交 | ✓ | 40s |
-| GET | `/orders/pending` | 当日委托 | ✓ | 40s |
+| GET | `/orders/pending` | 在途委托（极速模式=F8 可撤，仅活单；传统模式=当日全量） | ✓ | 40s |
+| GET | `/orders/full` | 当日全量委托（含已成交/已撤，对账核单唯一入口，两态语义一致） | ✓ | 40s |
 | GET | `/orders/{entrust_no}/status` | 按合同编号查委托状态 + 成交回报（join 当日委托 × 当日成交；每次调用两份表拷贝） | ✓ | 60s |
 | POST | `/orders` | 下单（限价/市价） | ✓ | 40s |
-| POST | `/orders/cancel-all` | 撤单（全部/撤买/撤卖/撤最后） | ✓ | 40s |
+| POST | `/orders/cancel-all` | 撤单（全部/撤买/撤卖/撤最后；极速模式映射 A/X/C 同页直点，L 报 `VALIDATION_ERROR`） | ✓ | 40s |
 | POST | `/actions/send-key` | 手动发送按键 | ✓ | 30s |
 | POST | `/actions/click` | 鼠标点击坐标 | ✓ | 30s |
 | POST | `/actions/close-dialog` | 关闭买入/卖出子面板 | ✓ | 30s |

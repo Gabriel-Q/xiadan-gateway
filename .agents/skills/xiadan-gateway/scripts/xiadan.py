@@ -152,9 +152,10 @@ READ_COMMANDS = {
     "health":   ("/health",          "健康检查：xiadan.exe 进程/登录态/队列/错误统计"),
     "queue":    ("/queue/status",    "任务队列状态（排队数/是否空闲）"),
     "balance":  ("/account/balance", "资金余额（可用/冻结/市值；速度最快）"),
-    "positions": ("/positions",      "当前持仓明细（约 3~8 秒）"),
-    "trades":   ("/trades/today",    "今日成交明细（约 4~5 秒）"),
-    "orders":   ("/orders/pending",  "当日全部委托（含已成交/已撤）"),
+    "positions": ("/positions",      "当前持仓明细（极速模式 ~2.5s，传统 3~8s）"),
+    "trades":   ("/trades/today",    "今日成交明细（极速模式 ~2.5s，传统 4~5s）"),
+    "orders":   ("/orders/pending",  "在途委托（极速模式=F8 可撤；传统=当日全量）"),
+    "orders_full": ("/orders/full",  "当日全量委托（含已成交/已撤，对账核单用）"),
 }
 
 

@@ -11,21 +11,27 @@ CLI 子命令与 HTTP 端点一一对应；本文供需要理解响应字段全�
 |----------|------|------|--------|
 | `health` | GET | `/health` | <1s |
 | `queue` | GET | `/queue/status` | <1s |
-| `balance` | GET | `/account/balance` | 2~4s |
-| `positions` | GET | `/positions` | 3~8s |
-| `trades` | GET | `/trades/today` | 4~5s |
+| `balance` | GET | `/account/balance` | 2~4s（极速 ~2s） |
+| `positions` | GET | `/positions` | 3~8s（极速 ~2.5s） |
+| `trades` | GET | `/trades/today` | 4~5s（极速 ~2.5s） |
 | `orders` | GET | `/orders/pending` | 3~5s |
+| `orders_full` | GET | `/orders/full` | 3~5s |
 | `order-status <NO>` | GET | `/orders/{entrust_no}/status` | 8~15s |
 | `buy` / `sell` | POST | `/orders`（头 `Idempotency-Key` 必填） | 2~10s |
-| `cancel [type]` | POST | `/orders/cancel-all` | 2~5s |
+| `cancel [type]` | POST | `/orders/cancel-all` | 2~5s（极速 ~0.5s） |
 
 > 网关另有 `/actions/*`（裸 UI 操作）、`/admin/*`（管理）、`/diagnostic/*`（诊断）、
 > `/ocr/quality`、`/fast/*`（极速模式端点）——skill 刻意不暴露，需要时由用户手动操作。
 
-## 极速模式（order.fast_mode: true，2026-10-12 落地）
+## 极速模式（order.fast_mode: true，2026-10-12 落地；同日扩展查询/撤单映射）
 
-网关配置开启后，`POST /orders` 的**限价单**自动改走「双向委托单页」极速路径
-（响应带 `routed:"fast"`，~2.5s；市价单仍走传统路径）。与传统路径的差异：
+网关配置开启后，除 `POST /orders` 的**限价单**自动改走「双向委托单页」极速路径
+（响应带 `routed:"fast"`，~2.5s；市价单仍走传统路径）外，传统查询与撤单端点
+也在路由层映射极速流：`/account/balance`、`/positions`、`/trades/today`、
+`/orders/cancel-all`(A/X/C) 全部加速 ~一半以上；**`/orders/pending` 语义归正为
+在途委托**（极速=F8 可撤，仅活单；传统模式保持历史行为=当日全量）；
+`/orders/full` 为两态一致的全量委托入口。极速映射分支**无断连作废语义**
+（`BROKER_DISCONNECTED` 不生效，开启极速即接受此差异）。与传统下单路径的差异：
 
 | 差异点 | 传统路径 | 极速路径 |
 |--------|---------|---------|
@@ -34,7 +40,7 @@ CLI 子命令与 HTTP 端点一一对应；本文供需要理解响应字段全�
 | 提交前校验 | 名称联动 + 可买就绪门控（3s 轮询）等全套 | 唯一门控：可买/可卖读数 ≥0（单读，空则 `SERVER_UNAVAILABLE`，新表单首单可能被拦，重试即过） |
 | 成功语义 | `confirmed=true` = 黄色横幅可见 | `submitted=true` = 门控通过+提交已点击（**≠委托已登记**：客户端弹窗拦截表现为幻影成功，网关任务前清扫自动安全关窗） |
 
-委托是否落账以 `orders`（全量含已撤）复核。模拟市价单推荐「买入挂涨停价、
+委托是否落账以 `orders_full`（全量含已撤）复核。模拟市价单推荐「买入挂涨停价、
 卖出挂跌停价」的限价单（当日最新昨收 ×1.1/×0.9）——免切传统慢路径。
 前提：券商窗口宽度保证双向委托页买卖两组件完整在屏。
 

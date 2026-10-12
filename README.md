@@ -194,7 +194,7 @@ Copy `config/app_config.example.json` to `config/app_config.json` and edit `trad
 | `alerts.format` | generic | `generic`=full structured JSON (custom receiver); `text`=WeCom group-bot / DingTalk custom-bot text format; `feishu`=Feishu/Lark custom-bot text format |
 | `alerts.timeout_seconds` | 5 | Webhook POST timeout (seconds). Sent on a background daemon thread, never blocks the trading path |
 | `ocr.max_retry` | 3 | Max captcha OCR retries |
-| `order.fast_mode` | false | **Fast-mode master switch (highest priority)**: when true, `POST /orders` limit orders route through the 双向委托 single-page fast path (~2.5s/order, cancel ~0.5s via `/fast/cancel`); all other `order.*` keys are ignored (no banner capture / no entrust-number recovery / no reconciliation / no name-linkage check / no trading-hours precheck — the only gate is a non-negative buyable/sellable read). Market orders never take the fast path — they fall back to the legacy flow. Companion endpoints: `/fast/home`, `/fast/orders`, `/fast/cancel`, `/fast/positions|trades|orders` (F8 cancellable-only), `/fast/orders/full`, `/fast/balance` |
+| `order.fast_mode` | false | **Fast-mode master switch (highest priority)**: when true, ① `POST /orders` limit orders route through the 双向委托 single-page fast path (~2.5s/order); ② legacy query endpoints `/account/balance`, `/positions`, `/trades/today` map to fast in-page queries at the route layer (~2-2.5s, response shape unchanged), `/orders/pending` is re-scoped to in-flight orders (= F8 cancellable-only), and `/orders/cancel-all` A/X/C map to same-page clicks (~0.5s; `L` returns `VALIDATION_ERROR`); all other `order.*` keys are ignored (no banner capture / no entrust-number recovery / no reconciliation / no name-linkage check / no trading-hours precheck — the only gate is a non-negative buyable/sellable read; the fast-mapped query branches have no `BROKER_DISCONNECTED` invalidation). Market orders never take the fast path — they fall back to the legacy flow. When false, legacy endpoints behave exactly as before the mapping was introduced (strict isolation). Full order lists use `GET /orders/full` in both modes. Companion endpoints: `/fast/home`, `/fast/orders`, `/fast/cancel`, `/fast/positions|trades|orders` (F8 cancellable-only), `/fast/orders/full`, `/fast/balance` |
 | `order.reject_outside_trading_hours` | false | Fail fast at `place_order` entry outside trading hours (weekday + statutory holidays + 9:15-11:30 / 13:00-15:00; three-tier holiday calendar: chinesecalendar → SZSE official monthly calendar (current year fetched once and cached under `data/trading_calendar/`, offline reads once complete) → weekday-only — broker errors remain the fallback). Off by default to preserve after-hours order queuing |
 | `order.capture_entrust_no` | false | After a successful order, capture the contract number from the bottom-right success banner (background screen-grab + template OCR, trailing-period anchored — broker number lengths vary). `null` on capture failure; order success is independent (see the response note). Adds ~1s on success, up to the 5s capture timeout on failure. Pair with `order.verify_entrust_no` for reconciliation. Session modes: console-attached (VNC) and RDP-attached sessions read directly (2026-10-10 field-verified); an RDP-disconnected session cannot be read reliably — the height-class gate declines, and orders fall through to `order.recover_entrust_no` |
 | `order.entrust_no_timeout_seconds` | 5.0 | Banner-capture wait timeout (seconds); returns immediately on success, only slows the failure path |
@@ -215,9 +215,15 @@ Copy `config/app_config.example.json` to `config/app_config.json` and edit `trad
 
 Enabled via `order.fast_mode: true` (highest priority — all other `order.*` keys become ineffective). Every operation converges onto the broker's 双向委托 (two-way order entry) single page: buy and sell forms side by side (buy-side controls identical to the legacy F1 page), bottom tabs 持仓(F6)/成交(F7)/委托(F8) for one-click queries, and 全撤/撤买/撤卖 cancel buttons on the same page — eliminating F1/F2 page switches, F4 tree navigation, and repeated full-tree traversals.
 
+**Legacy-endpoint mapping (2026-10-12 extension)**: with fast mode on, legacy endpoints map to the fast flow at the route layer — URL contract and response shape unchanged. `GET /account/balance`, `/positions`, `/trades/today` run in-page queries (~2-2.5s; `/positions` drops the blank placeholder column); `GET /orders/pending` is re-scoped to **in-flight orders** (= F8 cancellable-only, live orders); `POST /orders/cancel-all` A/X/C become same-page clicks (~0.5s; `L` cancel-last is unsupported in the fast path and returns `VALIDATION_ERROR`). With `fast_mode=false` these endpoints behave exactly as before the mapping was introduced (strict isolation). **Full order lists use `GET /orders/full` in both modes.** Note: the fast-mapped branches have no disconnect-invalidation semantics (`BROKER_DISCONNECTED` does not apply) — enabling fast mode manually means accepting this difference.
+
 | Endpoint | Purpose | Measured |
 |------|------|---------|
 | `POST /orders` (limit) | Fast order, response carries `routed:"fast"` | ~2.5s |
+| `GET /account/balance` · `/positions` · `/trades/today` (fast-mapped) | Legacy endpoints via in-page queries, response shape unchanged | ~2-2.5s |
+| `GET /orders/pending` (fast-mapped) | In-flight orders (= F8 cancellable-only, live) | ~2.2-3.4s |
+| `GET /orders/full` | Today's full order list (both modes; fast takes the F4 page) | ~4s (fast) / 3~5s (legacy) |
+| `POST /orders/cancel-all` (fast-mapped) | Cancel type=A/X/C same-page clicks; `L` returns `VALIDATION_ERROR` | ~0.5s |
 | `POST /fast/orders` | Same (explicit fast entry, no idempotency) | ~2.5s |
 | `POST /fast/cancel` | Same-page cancel (`type`: A all / X buy / C sell) | ~0.5s |
 | `GET /fast/positions` · `/fast/trades` | F6 positions / F7 fills | ~2.5-3s |
@@ -314,10 +320,11 @@ All responses return HTTP 200; success/failure is distinguished by the JSON `sta
 | GET | `/account/balance` | Account balance | ✓ | 40s |
 | GET | `/positions` | Position query | ✓ | 40s |
 | GET | `/trades/today` | Today's trades | ✓ | 40s |
-| GET | `/orders/pending` | Today's orders | ✓ | 40s |
+| GET | `/orders/pending` | In-flight orders (fast mode = F8 cancellable-only, live orders; legacy mode = today's full list) | ✓ | 40s |
+| GET | `/orders/full` | Today's full order list (incl. filled/cancelled — the reconciliation entry, identical semantics in both modes) | ✓ | 40s |
 | GET | `/orders/{entrust_no}/status` | Order status + fill report by contract number (joins today's orders × trades; two table copies per call) | ✓ | 60s |
 | POST | `/orders` | Place order (limit/market) | ✓ | 40s |
-| POST | `/orders/cancel-all` | Cancel orders (all / buys / sells / last) | ✓ | 40s |
+| POST | `/orders/cancel-all` | Cancel orders (all / buys / sells / last; fast mode maps A/X/C to same-page clicks, `L` returns `VALIDATION_ERROR`) | ✓ | 40s |
 | POST | `/actions/send-key` | Send a key manually | ✓ | 30s |
 | POST | `/actions/click` | Mouse click at coordinates | ✓ | 30s |
 | POST | `/actions/close-dialog` | Close the buy/sell sub-panel | ✓ | 30s |

@@ -7,7 +7,7 @@ from typing import Optional
 
 from flask import Blueprint, request
 
-from src.api.helpers import get_param
+from src.api.helpers import get_param, fast_mode_enabled
 from src.api.idempotency import IdempotencyChecker, should_keep_record_on_error
 from src.api.response import (
     generate_request_id,
@@ -317,6 +317,10 @@ def cancel_all_orders():
     示例:
         POST /orders/cancel-all                  # 全部撤单
         POST /orders/cancel-all  {"type": "X"}   # 撤买
+
+    极速映射（order.fast_mode=true）: A/X/C 走双向委托页同页按钮直点
+    （~0.5s，无确认框）；L（撤最后）极速路径不支持，显式返回
+    VALIDATION_ERROR。false 时传统流程，行为不变。
     """
     request_id = generate_request_id()
     config = AppConfig()
@@ -333,6 +337,27 @@ def cancel_all_orders():
 
     _start = time.time()
     try:
+        # 极速映射（order.fast_mode=true）：A/X/C 同页按钮直点（~0.5s）。
+        # L（撤最后）极速单页流无对应按钮 → 显式报错（2026-10-12 用户定版），
+        # 不静默回落传统流程——避免一个开关下撤单语义静默漂移
+        if fast_mode_enabled():
+            if cancel_type == "L":
+                return error_response(
+                    ErrorCode.VALIDATION_ERROR,
+                    "极速模式不支持撤最后（type=L）",
+                    request_id,
+                    "极速路径仅支持 A(全部)/X(撤买)/C(撤卖)；如需撤最后请"
+                    "关闭 order.fast_mode 或改用全撤"
+                )
+            from src.services.fast_trader import FastTrader
+            result = task_queue.submit(
+                func=lambda: FastTrader().cancel(cancel_type),
+                task_name="fast_cancel",
+                params={"type": cancel_type},
+                timeout=15
+            )
+            return success_response(result, request_id, duration_ms=(time.time() - _start) * 1000)
+
         from src.services.trading_service import TradingService
         query_timeout = config.get_task_queue_config().get("query_timeout_seconds", 30)
         result = task_queue.submit(

@@ -194,28 +194,41 @@ def get_queue_status() -> str:
 
 @mcp.tool()
 def get_balance() -> str:
-    """查询资金余额（可用金额/冻结/市值等；control_id 直读，速度最快）。"""
+    """查询资金余额（可用金额/冻结/市值等；control_id 直读，速度最快）。
+    网关开启极速模式（order.fast_mode）时走极速路径 ~2s，否则传统流程。"""
     return client.call("GET", "/account/balance")
 
 
 @mcp.tool()
 def get_positions() -> str:
     """查询当前持仓明细（证券代码/名称/余额/成本价/盈亏等）。
-    耗时约 3~8 秒；返回空列表通常表示无持仓。"""
+    网关开启极速模式时走 F6 页内查询 ~2.5s，否则传统流程 3~8 秒；
+    返回空列表通常表示无持仓。"""
     return client.call("GET", "/positions")
 
 
 @mcp.tool()
 def get_today_trades() -> str:
-    """查询今日成交明细（成交时间/编号/价格/数量等）。耗时约 4~5 秒。"""
+    """查询今日成交明细（成交时间/编号/价格/数量等）。
+    网关开启极速模式时走 F7 页内查询 ~2.5s，否则传统流程约 4~5 秒。"""
     return client.call("GET", "/trades/today")
 
 
 @mcp.tool()
 def get_today_orders() -> str:
-    """查询当日全部委托（含已成交/已撤）。表头无独立状态列——委托状态通过
-    「备注」（如"全部撤单"）与「撤消数量/成交数量」体现。"""
+    """查询在途委托（pending）。网关开启极速模式时返回 F8 可撤委托
+    （仅当前可撤的在途单，撤掉即消失）；关闭极速模式时保持历史行为，
+    返回当日全量委托。需要全天全量记录（含已成交/已撤）请用
+    get_orders_full。"""
     return client.call("GET", "/orders/pending")
+
+
+@mcp.tool()
+def get_orders_full() -> str:
+    """查询当日全量委托（含已成交/已撤/废单）——对账与核单入口。
+    两态语义一致（极速映射 F4 页/传统当日委托页）。表头无独立状态列，
+    委托状态通过「备注」（如"全部撤单"）与「撤消数量/成交数量」体现。"""
+    return client.call("GET", "/orders/full")
 
 
 @mcp.tool()
@@ -328,6 +341,9 @@ def _register_trading_tools() -> None:
         Args:
             cancel_type: all=撤销全部委托（默认），buy=只撤买入委托，
                 sell=只撤卖出委托，last=撤销最近一笔委托
+
+        网关开启极速模式时 all/buy/sell 走同页直点 ~0.5s；last（撤最后）
+        极速路径不支持，会返回 VALIDATION_ERROR（需关闭网关 fast_mode）。
         """
         mapping = {"all": "A", "buy": "X", "sell": "C", "last": "L"}
         return client.call("POST", "/orders/cancel-all",

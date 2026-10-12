@@ -175,6 +175,69 @@ class TestFastOffTraditional:
         assert cap["task_name"] == "cancel_all_orders"
 
 
+# ── 极速模式市价单拒绝（2026-10-12 用户定版：不回落传统，避免切页）──
+
+MARKET_MSG_FRAGMENT = "极速模式下不支持市价单"
+
+
+class TestMarketOrderPolicy:
+    def test_orders_market_rejected_in_fast_mode(self, make_client, monkeypatch):
+        """POST /orders fast on + market → VALIDATION_ERROR，任务不入队、
+        幂等记录不消费（校验位于幂等检查之前）"""
+        client, cap = make_client(True)
+        from src.api.idempotency import IdempotencyChecker
+        idem_calls = []
+        monkeypatch.setattr(IdempotencyChecker, "check_and_record",
+                            lambda self, key: idem_calls.append(key))
+        r = client.post("/orders", json={
+            "code": "601991", "status": "1", "amount": "100",
+            "price_type": "market"}, headers={"Idempotency-Key": "k-market-1"})
+        body = r.get_json()
+        assert body["error_code"] == "VALIDATION_ERROR"
+        assert MARKET_MSG_FRAGMENT in body["message"]
+        assert "涨停价" in body["message"]          # 引导限价挂涨跌停模拟
+        assert "task_name" not in cap               # 未入队
+        assert idem_calls == []                     # 幂等键未被消费
+
+    def test_fast_orders_market_rejected(self, make_client):
+        """/fast/orders 市价 → 同样拒绝（原回落分支已删除）"""
+        client, cap = make_client(True)
+        r = client.post("/fast/orders", json={
+            "code": "000001", "status": "1", "amount": "100",
+            "price_type": "market"})
+        body = r.get_json()
+        assert body["error_code"] == "VALIDATION_ERROR"
+        assert MARKET_MSG_FRAGMENT in body["message"]
+        assert "task_name" not in cap
+
+    def test_fast_orders_limit_still_works(self, make_client, monkeypatch):
+        """校验收紧不误伤限价路径"""
+        client, cap = make_client(True)
+        import src.services.fast_trader as ft
+        monkeypatch.setattr(ft.FastTrader, "place_order",
+                            lambda self, **kw: {"submitted": True, **kw})
+        r = client.post("/fast/orders", json={
+            "code": "000001", "status": "1", "amount": "100",
+            "price": "10.60", "price_type": "limit"})
+        body = r.get_json()
+        assert body["status"] == "success"
+        assert body["data"]["submitted"] is True
+        assert cap["task_name"] == "fast_place_order"
+
+    def test_orders_market_traditional_when_fast_off(self, make_client, monkeypatch):
+        """fast off 时市价单照常走传统 Trader（行为不变）"""
+        client, cap = make_client(False)
+        import src.core.trader as trader_mod
+        monkeypatch.setattr(trader_mod.Trader, "place_order",
+                            lambda self, **kw: {"confirmed": True})
+        r = client.post("/orders", json={
+            "code": "601991", "status": "1", "amount": "100",
+            "price_type": "market"}, headers={"Idempotency-Key": "k-market-2"})
+        body = r.get_json()
+        assert body["status"] == "success"
+        assert cap["task_name"] == "place_order"
+
+
 # ── 纯单元：空占位列丢弃 ─────────────────────────────────────
 
 class TestStripBlankColumns:

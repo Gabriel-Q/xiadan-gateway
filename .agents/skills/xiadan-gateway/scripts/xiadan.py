@@ -172,8 +172,10 @@ def _add_order_args(p: argparse.ArgumentParser) -> None:
                    help="委托价格，最多 2 位小数。限价单必填且必须是用户给出的"
                         "显式价格——禁止自行估算「最新价/现价」；市价单不填")
     p.add_argument("--price-type", choices=["limit", "market"], default="limit",
-                   help="limit=限价（默认），market=市价。实测该券商市价委托"
-                        "常被拒（ORDER_PRICE_REQUIRED），优先使用限价")
+                   help="limit=限价（默认），market=市价。极速模式（网关 "
+                        "fast_mode=true）下市价单被直接拒绝——用限价挂涨跌"
+                        "停价模拟市价；传统模式下该券商市价委托也实测常被拒"
+                        "（ORDER_PRICE_REQUIRED），两种模式都优先限价")
     p.add_argument("--idem-key", default=None, metavar="KEY",
                    help="幂等键。缺省自动生成并打印到 stderr——超时后重试"
                         "必须复用同一键（同键重试会被拦截，新键=新订单）")

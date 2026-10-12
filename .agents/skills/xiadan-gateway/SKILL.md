@@ -56,7 +56,7 @@ uv run --no-project python <skill目录>/scripts/xiadan.py <命令>
 
 | 命令 | 说明 |
 |------|------|
-| `buy --code 601991 --amount 100 --price 10.50` | 限价买入（`--price-type market` 为市价，常被拒） |
+| `buy --code 601991 --amount 100 --price 10.50` | 限价买入（`--price-type market` 市价：极速模式被网关拒绝，传统模式常被券商拒） |
 | `sell --code 601991 --amount 100 --price 9.80` | 限价卖出 |
 | `cancel [all\|buy\|sell\|last]` | 撤全部/撤买/撤卖/撤最近一笔（默认 all） |
 
@@ -72,8 +72,9 @@ uv run --no-project python <skill目录>/scripts/xiadan.py <命令>
   全量。**全天全量记录（含已成交/已撤）一律用 `orders_full`**（两态语义一致）
 - **撤单映射**：`cancel all/buy/sell` 走同页直点（~0.5s）；`last`（撤最后）
   极速路径不支持，会收到 `VALIDATION_ERROR`（需关闭网关 fast_mode）
-- **下单映射**：`buy`/`sell` 限价单自动走极速路径（~2.5s；市价单不受影响，
-  仍回落传统慢路径）。极速路径的响应字段与传统不同，解读规则随之变化：
+- **下单映射**：`buy`/`sell` 限价单自动走极速路径（~2.5s；**市价单不支持**
+  ——网关显式报 `VALIDATION_ERROR`，回落传统会切 F1/F2 破坏单页纪律）。
+  极速路径的响应字段与传统不同，解读规则随之变化：
 
 - 极速响应 = `routed:"fast"` + `ready`（可买/可卖读数）+ `submitted`——
   **没有 `confirmed` 与 `entrust_no`**（横幅截获/回补/对账全部不生效）
@@ -82,9 +83,9 @@ uv run --no-project python <skill目录>/scripts/xiadan.py <命令>
   落账以 `orders_full`（全量含已撤）复核为准
 - 唯一提交门控 = 可买/可卖读数 ≥0：全新表单异步填充偏慢，首单可能被拦
   （`SERVER_UNAVAILABLE`），**原样重试即可**
-- **模拟市价单**：市价会落慢路径且模拟盘常被拒——改用「买入挂涨停价、
-  卖出挂跌停价」的限价单（涨跌停价 = 当日**最新**昨收 ×1.1 / ×0.9，过期昨收
-  会算出越界价被弹窗拦截）
+- **模拟市价单**：市价单在极速模式下被网关直接拒绝（2026-10-12 定版）——
+  改用「买入挂涨停价、卖出挂跌停价」的限价单（涨跌停价 = 当日**最新**昨收
+  ×1.1 / ×0.9，过期昨收会算出越界价被弹窗拦截）
 - 前提：券商软件窗口宽度需保证「双向委托」页买卖两组件完整在屏（一次性
   手动调整）；`/fast/*` HTTP 端点 CLI 不暴露（同准则 8），排错见 references/api.md
 

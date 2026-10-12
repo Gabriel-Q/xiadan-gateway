@@ -194,7 +194,7 @@ uv run python main.py --dev       # 开发模式（热加载）
 | `alerts.format` | generic | `generic`=完整结构化 JSON（自建 receiver）；`text`=企业微信群机器人/钉钉自定义机器人文本格式；`feishu`=飞书/Lark 自定义机器人文本格式 |
 | `alerts.timeout_seconds` | 5 | webhook POST 超时（秒）。后台 daemon 线程发送，不阻塞交易路径 |
 | `ocr.max_retry` | 3 | 验证码识别最大重试次数 |
-| `order.fast_mode` | false | **极速模式总开关（优先级最高）**：开启后①`POST /orders` 限价单直接走双向委托页单页极速路径（下单 ~2.5s）；②传统查询端点 `/account/balance`、`/positions`、`/trades/today` 在路由层映射极速页内查询（~2-2.5s，响应结构不变），`/orders/pending` 语义归正为在途委托（=F8 可撤），`/orders/cancel-all` 的 A/X/C 映射同页直点（~0.5s，`L` 报 `VALIDATION_ERROR`）；其余 `order.*` 配置全部失效（不截获横幅/不回补/不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖读数 ≥0；极速映射查询分支无 `BROKER_DISCONNECTED` 作废语义）。市价单不走极速路径，仍回落传统流程。关闭时传统端点行为与映射引入前完全一致（严格隔离）。全量委托两态统一走 `GET /orders/full`。配套端点：`/fast/home`、`/fast/orders`、`/fast/cancel`、`/fast/positions|trades|orders`（F8 仅可撤）、`/fast/orders/full`、`/fast/balance` |
+| `order.fast_mode` | false | **极速模式总开关（优先级最高）**：开启后①`POST /orders` 限价单直接走双向委托页单页极速路径（下单 ~2.5s）；②传统查询端点 `/account/balance`、`/positions`、`/trades/today` 在路由层映射极速页内查询（~2-2.5s，响应结构不变），`/orders/pending` 语义归正为在途委托（=F8 可撤），`/orders/cancel-all` 的 A/X/C 映射同页直点（~0.5s，`L` 报 `VALIDATION_ERROR`）；其余 `order.*` 配置全部失效（不截获横幅/不回补/不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖读数 ≥0；极速映射查询分支无 `BROKER_DISCONNECTED` 作废语义）。市价单在极速模式下被显式拒绝（`VALIDATION_ERROR`，回落传统会切 F1/F2 破坏单页纪律——请用限价挂涨跌停价模拟市价）。关闭时传统端点行为与映射引入前完全一致（严格隔离）。全量委托两态统一走 `GET /orders/full`。配套端点：`/fast/home`、`/fast/orders`、`/fast/cancel`、`/fast/positions|trades|orders`（F8 仅可撤）、`/fast/orders/full`、`/fast/balance` |
 | `order.reject_outside_trading_hours` | false | 下单入口交易时段预检（工作日 + 法定节假日 + 9:15-11:30 / 13:00-15:00 粗判，节假日历三级降级：chinesecalendar → 深交所官方月度日历（当年 12 个月一次性拉取并缓存到 `data/trading_calendar/`，缓存齐全后离线读取）→ 仅周末/工作日粗判，节假日由券商报错兜底）。开启后非交易时段秒级返回 `OUTSIDE_TRADING_HOURS`，免走完整 UI 流程 ~11s；默认关闭以保留收盘后挂单行为 |
 | `order.capture_entrust_no` | false | 下单成功后从右下角成功横幅截获合同编号（后台抓屏 + 模板 OCR，句号锚定——券商编号长度不一）。截获失败返回 `null`；下单成败与之无关（见响应说明）。成功路径加 ~1s，失败路径最多 5s 截获超时。配合 `order.verify_entrust_no` 对账使用。会话形态差异：console 挂接（VNC）与 RDP 挂接态直接命中（2026-10-10 实测）；RDP 断开态无法可靠读取——高度门控拒绝读取，下单自动落回 `order.recover_entrust_no` |
 | `order.entrust_no_timeout_seconds` | 5.0 | 横幅截获等待超时（秒）；成功即返回，仅拖慢失败路径 |
@@ -238,11 +238,11 @@ uv run python main.py --dev       # 开发模式（热加载）
 
 ### 语义与注意事项
 
-- **模拟市价单的推荐做法**：市价单不走极速路径（自动回落传统慢路径，且模拟盘不支持市价）。推荐**买入挂涨停价、卖出挂跌停价的限价单**来模拟市价——立即全量成交、不经模式切换，全程留在极速路径内。涨跌停价 = 当日昨收 × 1.1 / × 0.9，务必用当日最新昨收计算——过期昨收会算出越界价，被客户端弹窗拦截。
+- **模拟市价单的推荐做法**：市价单在极速模式下被网关显式拒绝（`VALIDATION_ERROR`，回落传统会切页破坏单页纪律，2026-10-12 定版）。改用**买入挂涨停价、卖出挂跌停价的限价单**来模拟市价——立即全量成交、不经模式切换，全程留在极速路径内。涨跌停价 = 当日昨收 × 1.1 / × 0.9，务必用当日最新昨收计算——过期昨收会算出越界价，被客户端弹窗拦截。
 - **`submitted: true` 的语义** = 「可买/可卖门控通过 + 提交已点击」，**不等于委托已登记**。客户端弹窗拦截（如价格越界）表现为幻影成功；TaskQueue 的任务前清扫会自动安全关闭残留弹窗（先存档再取消，绝不点确认），不阻塞后续操作。委托是否落账以 `/fast/orders`（活单）或 `/fast/orders/full`（全量）复核为准。
 - **唯一提交门控**：可买/可卖数值为 ≥0 的数字，否则报 `SERVER_UNAVAILABLE`（新表单异步填充偏慢，首单可能被拦，原样重试即可）。无名称联动校验、无时段预检；`/orders` 的 Idempotency-Key 幂等在极速分支同样生效。
 - **F8 只见可撤委托**：撤掉的委托即时从列表消失；查全量（含已撤）一律走 `/fast/orders/full`。
-- **页面切换纪律**：极速模式严禁 F1/F2（会全局跳页）。传统端点/市价回落跑完后页面停在 F1，极速任务检测到后会自动导航回双向委托页。
+- **页面切换纪律**：极速模式严禁 F1/F2（会全局跳页）。fast_mode=false 的传统端点跑完后页面停在 F1，极速任务检测到后会自动导航回双向委托页。
 - **验证码**：页内查询的表格复制必弹验证码（网关 OCR 自动处理，~1.1s）；下单不触发。
 - **勾选框状态客户端会话内持久**：引导只在网关启动时执行一次；若人工在客户端上改动过勾选框，重启网关或 `POST /fast/home` 即可恢复目标状态。
 

@@ -13,6 +13,9 @@ from src.api.response import (
     success_response, error_response_from_exception
 )
 from src.api.task_queue import TaskQueue
+from src.constants import (
+    FAST_MODE_MARKET_UNSUPPORTED_MSG, FAST_MODE_MARKET_UNSUPPORTED_SUGGESTION
+)
 from src.core.ocr import OcrService
 from src.core.validation import sanitize_price
 from src.exceptions import ApiError, ErrorCode
@@ -26,7 +29,11 @@ _CANCELS = ("A", "X", "C")
 
 
 def _validate_order_body():
-    """最小参数校验：code/status 必填，限价 price 两位小数，amount 正整数串"""
+    """最小参数校验：code/status 必填，限价 price 两位小数，amount 正整数串。
+
+    市价单不支持（2026-10-12 用户定版）：极速单页流无市价，回落传统
+    会切 F1/F2 破坏单页纪律——显式报错引导限价挂涨跌停模拟市价。
+    """
     code = (get_param("code") or "").strip()
     status = (get_param("status") or "").strip()
     amount = (get_param("amount") or "").strip()
@@ -40,21 +47,21 @@ def _validate_order_body():
     if price_type not in ("limit", "market"):
         raise ApiError(ErrorCode.VALIDATION_ERROR,
                        f"price_type 只能是 limit(限价) 或 market(市价): {price_type!r}")
+    if price_type == "market":
+        raise ApiError(ErrorCode.VALIDATION_ERROR,
+                       FAST_MODE_MARKET_UNSUPPORTED_MSG,
+                       suggestion=FAST_MODE_MARKET_UNSUPPORTED_SUGGESTION)
     if not amount or not amount.isdigit() or int(amount) <= 0:
         raise ApiError(ErrorCode.VALIDATION_ERROR,
                        f"amount 无效（正整数股数）: {amount!r}")
-    if price_type == "limit":
-        if not price:
-            raise ApiError(ErrorCode.VALIDATION_ERROR,
-                           "限价单 price 必填")
-        try:
-            price = sanitize_price(price)
-        except Exception:
-            raise ApiError(ErrorCode.VALIDATION_ERROR,
-                           f"价格格式无效: {price!r}")
-    elif price:
+    if not price:
         raise ApiError(ErrorCode.VALIDATION_ERROR,
-                       "市价单不能指定 price")
+                       "限价单 price 必填")
+    try:
+        price = sanitize_price(price)
+    except Exception:
+        raise ApiError(ErrorCode.VALIDATION_ERROR,
+                       f"价格格式无效: {price!r}")
     return code, status, amount, price, price_type
 
 
@@ -77,26 +84,13 @@ def fast_home():
 @fast_bp.route("/fast/orders", methods=["POST"])
 def fast_order():
     """极速下单：限价单全走双向委托页单页流（唯一门控=可买/可卖≥0）；
-    市价单本页不支持，自动回落传统 Trader 流程（F1/F2 页，历史代码）。"""
+    市价单不支持——显式返回 VALIDATION_ERROR（限价挂涨跌停价模拟市价），
+    不回落传统路径（回落会切 F1/F2 破坏单页纪律，2026-10-12 用户定版）。"""
     request_id = generate_request_id()
     task_queue = TaskQueue.get_instance()
     _start = time.time()
     try:
         code, status, amount, price, price_type = _validate_order_body()
-        if price_type == "market":
-            # 市价回落：双向委托页仅支持限价，跳传统流程（其自带全套防御）
-            from src.core.trader import Trader
-            from src.services.window_service import WindowService
-            result = task_queue.submit(
-                func=lambda: Trader(WindowService()).place_order(
-                    code=code, status=status, amount=amount,
-                    price=None, price_type="market", confirm=True),
-                task_name="fast_market_fallback",
-                params={"code": code, "status": status, "amount": amount},
-                timeout=30)
-            result["routed"] = "legacy(market)"
-            return success_response(result, request_id,
-                                    duration_ms=(time.time() - _start) * 1000)
         result = task_queue.submit(
             func=lambda: FastTrader(OcrService.get_instance()).place_order(
                 code=code, status=status, price=price, amount=amount),

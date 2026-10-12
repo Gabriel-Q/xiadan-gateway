@@ -26,7 +26,8 @@ CLI 子命令与 HTTP 端点一一对应；本文供需要理解响应字段全�
 ## 极速模式（order.fast_mode: true，2026-10-12 落地；同日扩展查询/撤单映射）
 
 网关配置开启后，除 `POST /orders` 的**限价单**自动改走「双向委托单页」极速路径
-（响应带 `routed:"fast"`，~2.5s；市价单仍走传统路径）外，传统查询与撤单端点
+（响应带 `routed:"fast"`，~2.5s；市价单在极速模式下被显式拒绝
+`VALIDATION_ERROR`——不回落传统路径，避免切页破坏单页纪律）外，传统查询与撤单端点
 也在路由层映射极速流：`/account/balance`、`/positions`、`/trades/today`、
 `/orders/cancel-all`(A/X/C) 全部加速 ~一半以上；**`/orders/pending` 语义归正为
 在途委托**（极速=F8 可撤，仅活单；传统模式保持历史行为=当日全量）；

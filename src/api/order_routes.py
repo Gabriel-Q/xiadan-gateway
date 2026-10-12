@@ -14,7 +14,7 @@ from src.api.response import (
     success_response, error_response, error_response_from_exception
 )
 from src.api.task_queue import TaskQueue
-from src.constants import CANCEL_TYPE_MAP
+from src.constants import CANCEL_TYPE_MAP, FAST_MODE_MARKET_UNSUPPORTED_MSG, FAST_MODE_MARKET_UNSUPPORTED_SUGGESTION
 from src.core.ocr import OcrService
 from src.core.trader import Trader
 from src.exceptions import ApiError, ErrorCode
@@ -157,6 +157,10 @@ def xiadan():
         confirm: 'true'=自动确认(默认)；'false'=客户端弹「委托确认」框时点否取消，
                  推荐的快速交易配置（客户端关闭确认）下无弹窗，不会拦截下单
 
+    极速模式（order.fast_mode=true）仅支持限价单：市价单显式返回
+    VALIDATION_ERROR（限价挂涨跌停价模拟市价），不回落传统路径——
+    回落会切 F1/F2 页，破坏极速单页纪律（2026-10-12 用户定版）。
+
     示例:
         POST /orders  {"code": "601991", "status": "1", "amount": "100", "price_type": "market"}
         POST /orders  {"code": "600000", "status": "1", "amount": "100", "price": "10.5", "price_type": "limit"}
@@ -227,6 +231,18 @@ def xiadan():
 
     confirm = (confirm_str == "true")
 
+    # 极速模式不支持市价单（2026-10-12 用户定版）：回落传统 Trader 会切
+    # F1/F2 破坏双向委托单页纪律——明确报错引导限价挂涨跌停模拟市价。
+    # 置于幂等键消费之前：校验类拒绝不占用幂等记录，客户端换限价重试
+    # 或关开关重试都不受影响
+    if (bool(config.get_order_config().get("fast_mode"))
+            and price_type == "market"):
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            FAST_MODE_MARKET_UNSUPPORTED_MSG, request_id,
+            FAST_MODE_MARKET_UNSUPPORTED_SUGGESTION
+        )
+
     # 客户端幂等键（必填）：key 生命周期 = 每个逻辑订单一个 key，
     # 超时重试复用同一 key（窗口内同 key 拒绝 = 重试保护）；新单请新 key
     idem_key = (request.headers.get("Idempotency-Key") or "").strip()
@@ -259,8 +275,10 @@ def xiadan():
         order_timeout = config.get_task_queue_config().get("watchdog_timeout_seconds", 30)
         # 极速模式总开关（order.fast_mode，优先级最高）：开启时限价单直接走
         # 双向委托页极速路径，其余 order.* 配置全部失效（不截获横幅/不回补/
-        # 不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖≥0）；
-        # 市价单不走极速路径，仍回落传统 Trader（用户定版 2026-10-12）。
+        # 不对账/无名称联动校验/无时段预检，唯一门控=可买/可卖≥0）。
+        # 市价单在极速模式下已于上方校验区显式拒绝（回落传统会切 F1/F2
+        # 破坏单页纪律，2026-10-12 用户定版）——能走到传统提交的只剩
+        # fast_mode=false 的请求。
         fast_mode = bool(config.get_order_config().get("fast_mode"))
         if fast_mode and price_type == "limit":
             from src.core.ocr import OcrService as _Ocr

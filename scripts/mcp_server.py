@@ -281,8 +281,10 @@ def _register_trading_tools() -> None:
         ready（可买/可卖读数）+submitted，**没有 confirmed/entrust_no**
         （横幅截获/回补/对账不生效）。submitted=true 仅表示「门控通过+
         提交已点击」，≠委托已登记——客户端弹窗拦截（如价格越界）表现
-        为幻影成功，落账以 get_today_orders() 复核为准。市价单不走极速
-        路径，仍回落传统流程（响应含 confirmed）。
+        为幻影成功，落账以 get_orders_full() 复核为准。**市价单极速模式
+        下不支持**：网关显式返回 VALIDATION_ERROR（回落传统会切 F1/F2 破坏
+        单页纪律）——请改用限价单挂涨停价（买入）/跌停价（卖出）模拟市价
+        （当日最新昨收 ×1.1 / ×0.9）。
 
         Args:
             code: 6 位证券代码，如 "601991"
@@ -290,8 +292,9 @@ def _register_trading_tools() -> None:
             amount: 委托数量（股，正整数；A 股主板通常须为 100 的整数倍）
             price: 委托价格，最多 2 位小数。限价单必填且必须是用户给出的
                 显式价格——禁止自行估算"最新价/现价"；市价单不填。
-            price_type: limit=限价（默认），market=市价。实测该券商市价委托
-                常被拒（ORDER_PRICE_REQUIRED），优先使用限价。
+            price_type: limit=限价（默认），market=市价（极速模式下网关
+                直接拒绝；传统模式实测该券商市价委托也常被拒
+                ORDER_PRICE_REQUIRED）——两种模式都优先限价。
             idempotency_key: 可选幂等键（1-128 字符，API 必填——未提供时本
                 工具自动生成 uuid）。注意：自动生成意味着超时后"再次调用
                 本工具"会被视为新订单、无重试保护；需要重试保护时请显式

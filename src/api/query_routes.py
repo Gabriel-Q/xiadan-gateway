@@ -67,7 +67,7 @@ def get_balance():
             from src.services.fast_trader import FastTrader
             result = TaskQueue.get_instance().submit(
                 func=lambda: FastTrader().query_balance(),
-                task_name="fast_balance", timeout=20)
+                task_name="fast_balance", params={}, timeout=20)
             return success_response(result, request_id, duration_ms=(time.time() - _start) * 1000)
         query_timeout = config.get_task_queue_config().get("query_timeout_seconds", 30)
         result = _submit_query(
@@ -94,7 +94,8 @@ def get_position():
         if fast_mode_enabled():
             rows = TaskQueue.get_instance().submit(
                 func=lambda: _get_fast_trader().query_tab("positions"),
-                task_name="fast_query_positions", timeout=20)
+                task_name="fast_query_positions", params={"view": "positions"},
+                timeout=20)
             return success_response(strip_blank_columns(rows), request_id,
                                     duration_ms=(time.time() - _start) * 1000)
         query_timeout = config.get_task_queue_config().get("query_timeout_seconds", 30)
@@ -119,7 +120,8 @@ def get_today_trades():
         if fast_mode_enabled():
             rows = TaskQueue.get_instance().submit(
                 func=lambda: _get_fast_trader().query_tab("trades"),
-                task_name="fast_query_trades", timeout=20)
+                task_name="fast_query_trades", params={"view": "trades"},
+                timeout=20)
             return success_response(strip_blank_columns(rows), request_id,
                                     duration_ms=(time.time() - _start) * 1000)
         query_timeout = config.get_task_queue_config().get("query_timeout_seconds", 30)
@@ -177,7 +179,8 @@ def get_today_orders():
         if fast_mode_enabled():
             rows = TaskQueue.get_instance().submit(
                 func=lambda: _get_fast_trader().query_tab("orders"),
-                task_name="fast_query_orders", timeout=20)
+                task_name="fast_query_orders", params={"view": "orders"},
+                timeout=20)
             return success_response(strip_blank_columns(rows), request_id,
                                     duration_ms=(time.time() - _start) * 1000)
         query_timeout = config.get_task_queue_config().get("query_timeout_seconds", 30)
@@ -205,7 +208,7 @@ def get_full_orders():
         if fast_mode_enabled():
             rows = TaskQueue.get_instance().submit(
                 func=lambda: _get_fast_trader().query_full_orders(),
-                task_name="fast_full_orders", timeout=25)
+                task_name="fast_full_orders", params={}, timeout=25)
             return success_response(strip_blank_columns(rows), request_id,
                                     duration_ms=(time.time() - _start) * 1000)
         query_timeout = config.get_task_queue_config().get("query_timeout_seconds", 30)

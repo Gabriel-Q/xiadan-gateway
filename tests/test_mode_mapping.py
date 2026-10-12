@@ -37,7 +37,10 @@ def make_client(monkeypatch, tmp_path):
 
         captured = {}
 
-        def fake_submit(self, func, task_name, params=None, timeout=None, **kw):
+        def fake_submit(self, func, task_name, params, timeout=None, **kw):
+            # params 为必填位置参数（与真实签名一致）：映射分支漏传
+            # params 曾在测试全绿下线上炸出 INTERNAL_ERROR——mock 签名
+            # 必须跟真实签名严格对齐，让这类错误在测试期暴露
             captured["task_name"] = task_name
             captured["timeout"] = timeout
             # 真正执行 func：路由 lambda 内构造的 FastTrader 方法已被类级

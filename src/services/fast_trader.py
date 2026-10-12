@@ -154,10 +154,17 @@ class FastTrader:
         """
         window = self._window()
         c = self._cache
-        if not force and c["hwnd"] == window.handle and self._alive(c["boxes"].get(3552)):
+        if (not force and c["hwnd"] == window.handle
+                and self._alive(c["boxes"].get(3552))):
+            if not c["bootstrapped"]:
+                # 懒引导：启动引导失败（客户端未就绪）后的首个任务补执行
+                res = self._setup_checkboxes_via_f8(self._window())
+                self.logger.info(f"极速模式懒引导完成: "
+                                 f"{res[3551]}/{res[3552]}/{res[3553]}")
             return window
 
         last_fields = 0
+        navigated = False
         for attempt in (1, 2):
             window.set_focus()
             nav = c["nav"] if self._alive(c["nav"]) else None
@@ -178,16 +185,27 @@ class FastTrader:
             self._rebuild(self._window())
             if (len(c["fields"]) >= 13 and self._alive(c["fields"].get(1035))
                     and self._alive(c["boxes"].get(3552))):
-                return self._window()
+                navigated = True
+                # 新页面会话：勾选框状态未知（客户端重开会回落默认值）
+                c["bootstrapped"] = False
+                break
             last_fields = len(c["fields"])
             self.logger.warning(f"双向委托导航第 {attempt} 次未落页"
                                 f"（fields={last_fields}/13），重试")
             window = self._window()
-        raise ApiError(ErrorCode.CONTROL_NOT_FOUND,
-                       f"双向委托页导航失败（两次导航均未落页，"
-                       f"最后.fields={last_fields}/13——客户端可能停在"
-                       f"特殊页面或有窗口遮挡导航树）",
-                       suggestion="请人工点一次双向委托页后重试")
+        if not navigated:
+            raise ApiError(ErrorCode.CONTROL_NOT_FOUND,
+                           f"双向委托页导航失败（两次导航均未落页，"
+                           f"最后.fields={last_fields}/13——客户端可能停在"
+                           f"特殊页面或有窗口遮挡导航树）",
+                           suggestion="请人工点一次双向委托页后重试")
+        # 懒引导（force=bootstrap 自带引导，勿重复）：先于 force 分支设置
+        # bootstrapped=False，此处为启动引导失败/客户端重开后的补执行
+        if not c["bootstrapped"] and not force:
+            res = self._setup_checkboxes_via_f8(self._window())
+            self.logger.info(f"极速模式懒引导完成: "
+                             f"{res[3551]}/{res[3552]}/{res[3553]}")
+        return self._window()
 
     # ------------------------------------------------------------
     # 启动引导：回主页 + 三勾选框确保未勾选
@@ -228,26 +246,33 @@ class FastTrader:
                 result[cid] = "ok"
         return result
 
-    def bootstrap(self) -> dict:
-        """导航到双向委托页 → F8 → 三勾选框强制到目标状态（_BOX_TARGETS）
+    def _setup_checkboxes_via_f8(self, window) -> dict:
+        """F8 → 轮询 3551 渲染 → 勾选框强制到目标状态（启动引导/懒引导共用）
 
-        3551 只显示可撤委托=勾选（F8 只看可撤）；3552 联动 / 3553 不清空=未勾。
+        F8 必须在网格失焦时发送（网格持焦会吞功能键）；调用时机总在导航
+        点击或中性点击之后，焦点不在网格上。3551 随委托标签工具条渲染，
+        实测可晚于 1s——轮询到位再读状态。
         """
-        window = self._ensure_home(force=True)
         window.set_focus()
-        # F8 必须在网格失焦时发送——网格持焦会吞掉功能键（CVirtualGridCtrl
-        # 消费按键，页级加速键不触发，2026-10-12 实锤：先点网格中心再按
-        # F8，3551 永不渲染）。F8 不跳页，无 F1/F2 红线问题。
         window.type_keys("{F8}", pause=0.05)
-        # 3551 随委托标签工具条渲染，实测可晚于 1s——轮询到位再读状态
         for _ in range(4):
             time.sleep(0.4)
             self._rebuild(self._window())
             if 3551 in self._cache["boxes"]:
                 break
         res = self._enforce_checkboxes()
-        result = {cid: res.get(cid, "missing") for cid in self._CHECKBOXES}
         self._cache["bootstrapped"] = True
+        return {cid: res.get(cid, "missing") for cid in self._CHECKBOXES}
+
+    def bootstrap(self) -> dict:
+        """导航到双向委托页 → F8 → 三勾选框强制到目标状态（_BOX_TARGETS）
+
+        3551 只显示可撤委托=勾选（F8 只看可撤）；3552 联动 / 3553 不清空=未勾。
+        启动时客户端可能尚未登录（引导失败属预期）——失败由懒引导兜底：
+        客户端就绪后的首个极速任务经 _ensure_home 自动补执行。
+        """
+        window = self._ensure_home(force=True)
+        result = self._setup_checkboxes_via_f8(window)
         self.logger.info(f"极速模式引导完成: 3551/3552/3553 = "
                          f"{result[3551]}/{result[3552]}/{result[3553]}")
         return {"checkboxes": {str(k): v for k, v in result.items()},

@@ -138,6 +138,9 @@ def test_message_copy_requires_valid_hwnd(monkeypatch):
     main, _, _ = _tree_with_page()
     svc = _make_service("message")
     svc._cached_grid_hwnd = 0x10B6E
+    # 假句柄 0x10B6E 是否与真实窗口碰撞纯属偶然（客户端登出后活动窗口
+    # 变少即失败）——正向用例显式置 True，勿依赖系统句柄分配
+    monkeypatch.setattr(win32gui, "IsWindow", lambda h: True)
     svc._navigate_to_query_page(main, "当日委托")
     assert svc._nav_cache_lookup(main, "当日委托") is not None
 
@@ -149,8 +152,9 @@ def test_message_copy_requires_valid_hwnd(monkeypatch):
     assert svc2._nav_cache_lookup(main, "当日委托") is None
 
 
-def test_navigate_fast_path_skip_click_when_already_selected():
+def test_navigate_fast_path_skip_click_when_already_selected(monkeypatch):
     """已在目标页:缓存命中跳过树点击,消息模式下顺带复用网格句柄"""
+    import win32gui
     main, page_item, _ = _tree_with_page()
     page_item._seq = [True]  # 恒选中
     svc = _make_service("message")
@@ -158,6 +162,8 @@ def test_navigate_fast_path_skip_click_when_already_selected():
     PositionService._nav_tree_items = {"当日委托": page_item}
     PositionService._nav_grid_hwnds = {"当日委托": 0x10B6E}
     main.set_descendants([])  # 快路径不得触发全树遍历
+    # 假句柄碰撞问题同上——正向用例显式置 True
+    monkeypatch.setattr(win32gui, "IsWindow", lambda h: True)
 
     svc._cached_grid_hwnd = None
     svc._navigate_to_query_page(main, "当日委托")

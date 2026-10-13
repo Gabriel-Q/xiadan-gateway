@@ -109,7 +109,7 @@ uv run python main.py --dev       # 开发模式（热加载）
 
 **规则**：
 
-- **RDP 存活规则**——RDP 重连会把会话从 console 拉回 RDP 通道，普通方式断开会**断开并锁定**会话（Windows 安全设计；此时注入的点击落空、前台校验拒绝发键）。**网关自带会话断开自愈**：后台每 10s 检查（`win32ts` `WTSConnectState`），发现断开态**连续满 `debounce_seconds`（默认 30s）**即自动执行 `tscon <id> /dest:console`——以会话属主身份重挂 console 并同步解除锁定，仅在「已断开」时动作，绝不劫持正在交互使用的会话；两次自愈间隔 `cooldown_seconds`（默认 300s）。需要立即恢复也可手动执行 `tscon <id> /dest:console`（会话 id 用 `qwinsta` 查）
+- **RDP 存活规则**——RDP 重连会把会话从 console 拉回 RDP 通道，普通方式断开会**断开并锁定**会话（Windows 安全设计；此时注入的点击落空、前台校验拒绝发键）。**网关自带会话断开自愈**：后台每 10s 检查（`win32ts` `WTSConnectState`），发现断开态**连续满 `debounce_seconds`**（默认 30s）即自动执行 `tscon <id> /dest:console`——以会话属主身份重挂 console 并同步解除锁定，仅在「已断开」时动作，绝不劫持正在交互使用的会话；两次自愈间隔 `cooldown_seconds`（默认 300s）。需要立即恢复也可手动执行 `tscon <id> /dest:console`（会话 id 用 `qwinsta` 查）
 
   **⚠️ 重连竞态与四层防护**：会话在「客户端走了」与「用户正在重新连接」（输凭据期间、console→RDP 换轨过渡）两种场景下**同为断开态**，仅凭会话状态无法区分——若自愈恰在重连过程中动作，tscon 会与 RDP 附加撞车，可能把会话图形栈撞进僵死（实测 2026-10-06：蓝屏「请稍后」→ 黑屏 → 只能注销会话重建）。防护层次：
   - **TCP 判别器（主防线，实验验证）**：客户端连上服务器即与 3389 建立 ESTABLISHED，输凭据全程保持；客户端真离开时连接关闭。断开态下检测到该连接=用户正在重连，自愈让路（仅作用于断开事件前 600s 内——防 mstsc 停在密码框无限期阻塞自愈；检测异常按无连接处理，退回下层防护）
@@ -234,7 +234,7 @@ uv run python main.py --dev       # 开发模式（热加载）
 
 ### 使用前提（手动一次性调整）
 
-**运行极速模式前，请手动拖动券商软件窗口宽度，保证「双向委托」页面中买入和卖出两组件完整显示在屏幕上。**极速模式直接按控件当前位置落点击与读数，卖侧表单被挤出屏幕外时点击会落空。开启 `fast_mode` 后网关自动等待券商登录（每 5 秒检测，最长 30 分钟），检测到登录延时 3 秒执行引导（跳转双向委托页 + 强制三个勾选框：只显示可撤委托 = 勾选，买卖代码联动 / 委托后不清空 = 未勾）；引导失败或等待超时由首个极速任务懒引导兜底；`fast_mode=false` 时引导完全不执行（严格隔离，客户端保持默认 F1 起始态）。
+**运行极速模式前，请手动拖动券商软件窗口宽度，保证「双向委托」页面中买入和卖出两组件完整显示在屏幕上**。极速模式直接按控件当前位置落点击与读数，卖侧表单被挤出屏幕外时点击会落空。开启 `fast_mode` 后网关自动等待券商登录（每 5 秒检测，最长 30 分钟），检测到登录延时 3 秒执行引导（跳转双向委托页 + 强制三个勾选框：只显示可撤委托 = 勾选，买卖代码联动 / 委托后不清空 = 未勾）；引导失败或等待超时由首个极速任务懒引导兜底；`fast_mode=false` 时引导完全不执行（严格隔离，客户端保持默认 F1 起始态）。
 
 ### 语义与注意事项
 
@@ -867,7 +867,9 @@ xiadan-gateway/
 │   │   ├── query_routes.py      # 查询 Blueprint（持仓/资金/成交/委托）
 │   │   ├── order_routes.py      # 下单/撤单 Blueprint（含 entrust_no 对账）
 │   │   ├── action_routes.py     # 手动操作/诊断 Blueprint
+│   │   ├── fast_routes.py       # 极速模式 Blueprint（/fast/* 双向委托单页流）
 │   │   ├── task_queue.py        # 全局任务队列 + 看门狗恢复 + 运行统计
+│   │   ├── admission_gate.py    # 业务并发准入闸门（计数器，为管理端点预留容量）
 │   │   ├── response.py          # 统一响应封装（success/error）
 │   │   ├── helpers.py           # 路由层共享工具
 │   │   └── idempotency.py       # 下单幂等检查（Idempotency-Key 必填）
@@ -884,7 +886,9 @@ xiadan-gateway/
 │   │   ├── window_service.py    # 窗口/控件操作基础服务
 │   │   ├── window_monitor.py    # 窗口最小化监控线程
 │   │   ├── position_service.py  # 持仓/资金/成交查询
-│   │   └── trading_service.py   # 撤单服务
+│   │   ├── trading_service.py   # 撤单服务
+│   │   ├── fast_trader.py       # 极速模式 Trader（双向委托单页流编排）
+│   │   └── broker_link.py       # 券商连接态只读探测（状态栏「断开」，/health 用）
 │   ├── models/
 │   │   └── config.py            # AppConfig（单例 + 热重载）
 │   └── utils/
@@ -893,18 +897,34 @@ xiadan-gateway/
 │       ├── uia.py               # UIA 控件安全访问（safe_text/safe_control_type）
 │       ├── screenshot.py        # 截图工具 + 自动清理
 │       ├── poll.py              # 轮询等待（poll_until / timed）
-│       └── diagnostic.py        # 诊断工具（截图 + UI 文本 + OCR）
+│       ├── diagnostic.py        # 诊断工具（截图 + UI 文本 + OCR）
+│       ├── alert.py             # 告警 webhook 外推（企业微信/钉钉/generic）
+│       └── session_state.py     # 会话连接状态 + 桌面僵死追踪（单一事实源）
 ├── tests/
+│   ├── conftest.py              # 测试全局配置（pytest 收集前重定向日志到临时目录）
 │   ├── test_core.py             # 核心逻辑单元测试（无需真实券商客户端）
 │   ├── test_banner_ocr.py       # 横幅数字 OCR 单元测试（真实横幅条带样本夹具）
 │   ├── test_mcp_server.py       # MCP 适配层单元测试（桩掉 HTTP，不启动真实服务）
-│   └── test_skill_cli.py        # skill CLI 密封桩测 + SKILL.md 文档守卫
+│   ├── test_skill_cli.py        # skill CLI 密封桩测 + SKILL.md 文档守卫
+│   ├── test_admission_gate.py   # 业务并发准入闸门（容量封顶/管理端点绕行/配置校验）
+│   ├── test_broker_gate.py      # 券商链路事后门控（断连→查询作废/下单撤单转 UNKNOWN）
+│   ├── test_buyable_gate.py     # 可买/可卖就绪门控（点击下单按钮前唯一检查点）
+│   ├── test_cancel_btn_cache.py # 撤单按钮类级缓存（快路径点击/灰显回退全遍历复核）
+│   ├── test_captcha_detect.py   # 验证码弹窗三级快速检测（预测路径/定向扫描/全树兜底）
+│   ├── test_desktop_wedge.py    # 桌面僵死追踪 + session_health 合并 + 升级自愈
+│   ├── test_fast_grid_parse.py  # 极速网格 TSV 解析（OCR 空行/零值噪声行丢弃）
+│   ├── test_field_cache.py      # F1/F2 字段引用类级缓存（存活探针/联动失败作废）
+│   ├── test_mode_mapping.py     # 传统端点极速映射矩阵（order.fast_mode 两态）
+│   ├── test_nav_cache.py        # 导航缓存（TreeItem+页名，命中免全树遍历）
+│   ├── test_popup_rules.py      # 弹窗/提交错误分类规则（关键字边界）
+│   ├── test_session_gate.py     # 会话健康门（断开态快速拒绝/瞬态放行/统计豁免）
+│   └── test_window_monitor.py   # 窗口监控登录/启动期避让（三判据 + PID 记账）
 ├── scripts/
 │   ├── mcp_server.py           # MCP stdio 适配器（缺省只读；交易工具需 XIADAN_MCP_TRADING=1）
 │   ├── diagnose_settings.py     # 券商 UI 结构诊断脚本
 │   ├── generate_templates.py    # OCR 模板管理（查看/提取/批量标注）
 │   ├── train_ocr.py             # OCR 迭代训练（自动触发验证码 + 追踪准确率）
-│   ├── test_*.py / explore_*.py # 探索与实验调试脚本（开发期遗留，手工运行）
+│   ├── test_*.py / explore_*.py / probe_*.py 等 # 探索与实验调试脚本（开发期遗留，手工运行）
 │   └── legacy/                  # 从 tests/ 移出的一次性手工测试脚本（pytest 不收集）
 ├── .agents/
 │   └── skills/

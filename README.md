@@ -870,7 +870,9 @@ xiadan-gateway/
 │   │   ├── query_routes.py      # query Blueprint (positions/balance/trades/orders)
 │   │   ├── order_routes.py      # order/cancel Blueprint (incl. entrust_no reconciliation)
 │   │   ├── action_routes.py     # manual-action/diagnostic Blueprint
+│   │   ├── fast_routes.py       # fast-mode Blueprint (/fast/* bidir single-page flow)
 │   │   ├── task_queue.py        # global task queue + watchdog recovery + runtime stats
+│   │   ├── admission_gate.py    # business-concurrency admission gate (counters, reserves capacity for admin endpoints)
 │   │   ├── response.py          # unified response wrapper (success/error)
 │   │   ├── helpers.py           # route-layer shared utilities
 │   │   └── idempotency.py       # order idempotency check (mandatory Idempotency-Key)
@@ -887,7 +889,9 @@ xiadan-gateway/
 │   │   ├── window_service.py    # base window/control operations
 │   │   ├── window_monitor.py    # window-minimized monitor thread
 │   │   ├── position_service.py  # position/balance/trades queries
-│   │   └── trading_service.py   # cancel service
+│   │   ├── trading_service.py   # cancel service
+│   │   ├── fast_trader.py       # fast-mode trader (bidir single-page-flow orchestration)
+│   │   └── broker_link.py       # read-only broker-link probe (status-bar "disconnected" signal, for /health)
 │   ├── models/
 │   │   └── config.py            # AppConfig (singleton + hot reload)
 │   └── utils/
@@ -896,18 +900,34 @@ xiadan-gateway/
 │       ├── uia.py               # safe UIA access (safe_text/safe_control_type)
 │       ├── screenshot.py        # screenshot utility + auto-cleanup
 │       ├── poll.py              # poll-based waiting (poll_until / timed)
-│       └── diagnostic.py        # diagnostic tools (screenshot + UI text + OCR)
+│       ├── diagnostic.py        # diagnostic tools (screenshot + UI text + OCR)
+│       ├── alert.py             # alert webhook dispatch (WeCom / DingTalk / generic receivers)
+│       └── session_state.py     # session link state + desktop-wedge tracking (single source of truth)
 ├── tests/
+│   ├── conftest.py              # global test config (redirects logs to a tmp dir before collection)
 │   ├── test_core.py             # core-logic unit tests (no real broker client needed)
 │   ├── test_banner_ocr.py       # banner digit OCR unit tests (real banner-strip sample fixtures)
 │   ├── test_mcp_server.py       # MCP adapter unit tests (HTTP stubbed, no live server needed)
-│   └── test_skill_cli.py        # skill CLI hermetic tests + SKILL.md doc guard
+│   ├── test_skill_cli.py        # skill CLI hermetic tests + SKILL.md doc guard
+│   ├── test_admission_gate.py   # business-concurrency admission gate (cap / admin bypass / config validation)
+│   ├── test_broker_gate.py      # post-trade broker-link gate (disconnect → queries voided / orders → UNKNOWN)
+│   ├── test_buyable_gate.py     # buyable/sellable readiness gate (single checkpoint before the submit click)
+│   ├── test_cancel_btn_cache.py # cancel-button class-level cache (fast-path click / disabled fallback recheck)
+│   ├── test_captcha_detect.py   # three-tier captcha popup detection (predicted path / targeted scan / full tree)
+│   ├── test_desktop_wedge.py    # desktop-wedge tracking + session_health merge + escalated recovery
+│   ├── test_fast_grid_parse.py  # fast grid TSV parsing (OCR blank/zero noise-row filtering)
+│   ├── test_field_cache.py      # F1/F2 field-reference class-level cache (liveness probe / invalidation)
+│   ├── test_mode_mapping.py     # legacy-endpoint fast-mode mapping matrix (order.fast_mode both states)
+│   ├── test_nav_cache.py        # navigation cache (TreeItem + page name, hit skips full-tree walk)
+│   ├── test_popup_rules.py      # popup/submit-error classification rules (keyword boundaries)
+│   ├── test_session_gate.py     # session health gate (fast reject when disconnected / transient pass / stats exempt)
+│   └── test_window_monitor.py   # window-monitor login/startup hold-out (three criteria + PID bookkeeping)
 ├── scripts/
 │   ├── mcp_server.py           # MCP stdio adapter (read-only by default; trading tools behind XIADAN_MCP_TRADING=1)
 │   ├── diagnose_settings.py     # broker UI structure diagnostic
 │   ├── generate_templates.py    # OCR template management (view/extract/batch-annotate)
 │   ├── train_ocr.py             # iterative OCR training (auto-triggers captchas, tracks accuracy)
-│   ├── test_*.py / explore_*.py # exploration & experiment debug scripts (dev leftovers, run manually)
+│   ├── test_*.py / explore_*.py / probe_*.py etc. # exploration & experiment debug scripts (dev leftovers, run manually)
 │   └── legacy/                  # one-off manual test scripts moved out of tests/ (not collected by pytest)
 ├── .agents/
 │   └── skills/

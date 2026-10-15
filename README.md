@@ -242,6 +242,7 @@ Enabled via `order.fast_mode: true` (highest priority — all other `order.*` ke
 - **Meaning of `submitted: true`** = "buyable/sellable gate passed + submit clicked", **not "order registered"**. A client popup rejection (e.g. out-of-range price) surfaces as a phantom success; the TaskQueue's pre-task leftover-dialog sweep auto-closes it safely (evidence archived, then cancel — never clicks OK) without blocking subsequent operations. Verify actual registration via `/fast/orders` (live) or `/fast/orders/full` (full day).
 - **The only submit gate**: buyable/sellable must read as a number ≥ 0, otherwise `SERVER_UNAVAILABLE` (the fresh form fills slowly — the first attempt may be rejected; simply retry). No name-linkage check, no trading-hours precheck; the `/orders` Idempotency-Key idempotency still applies on the fast branch.
 - **F8 shows cancellable orders only**: cancelled orders vanish from the list immediately; for the full day's list (incl. cancelled) always use `/fast/orders/full`.
+- **F8 freshness cross-check (2026-10-15)**: after every F8 copy the gateway compares the row count (incl. the buy/sell split) against the live counters on the 全撤/撤买/撤卖 buttons — client-maintained state, independent of the copy pipeline, so a stale grid copy cannot match. A mismatch raises `DATA_MISMATCH` (fail fast; reconcile via `/orders/full` instead of retrying). If the button text cannot be parsed the check degrades to a warning, never a hard failure. The F4 full-list query sends F5 (page-level refresh — no grid focus needed, covers the whole page incl. forms) before copying, so the reconciliation path itself cannot serve stale data.
 - **Page-switch discipline**: F1/F2 are strictly forbidden in fast mode (they jump pages globally). After a fast_mode=false legacy endpoint the client stays on F1 — fast tasks detect it and navigate back to the bidir page automatically.
 - **Captcha**: grid copies on in-page queries always trigger the captcha (gateway OCR handles it, ~1.1s); order placement does not.
 - **Checkbox states persist for the client session**: the bootstrap runs once at gateway startup; if the checkboxes were changed manually in the client, restart the gateway or call `POST /fast/home` to restore the target state.
@@ -297,6 +298,7 @@ All responses return HTTP 200; success/failure is distinguished by the JSON `sta
 | `ORDER_PRICE_REQUIRED` | Broker requires an order price (market-order type unselected/unsupported, or limit mode without a price; suggests limit mode) |
 | `SERVER_UNAVAILABLE` | Broker server unavailable (e.g. transaction-processor forwarding failed) |
 | `OCR_FAILED` | Captcha recognition failed |
+| `DATA_MISMATCH` | Query result inconsistent with the client's live UI state (F8 cancellable row count ≠ cancel-button live counters — the grid copy returned stale data after an order/cancel). The result is **discarded**; do not retry the same query — reconcile via the full list (`GET /orders/full`) |
 | `INPUT_VERIFY_FAILED` | Stock-name linkage verification failed (code not accepted by the client) |
 | `INTERNAL_ERROR` | Unknown exception |
 | `QUEUE_TIMEOUT` | Task queuing timeout |

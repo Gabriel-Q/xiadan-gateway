@@ -86,6 +86,10 @@ uv run --no-project python <skill目录>/scripts/xiadan.py <命令>
 - **模拟市价单**：市价单在极速模式下被网关直接拒绝（2026-10-12 定版）——
   改用「买入挂涨停价、卖出挂跌停价」的限价单（涨跌停价 = 当日**最新**昨收
   ×1.1 / ×0.9，过期昨收会算出越界价被弹窗拦截）
+- **F8 新鲜度交叉校验**（2026-10-15）：`orders` 返回前行数（含买/卖细分）
+  会与全撤/撤买/撤卖按钮的实时计数比对，不一致报 `DATA_MISMATCH`——网格
+  复制到陈旧数据，结果已作废：勿重试同一查询，直接 `orders_full` 全量复核。
+  F4 全量查询复制前自动 F5 拉新，复核路径不会交旧数据
 - 前提：券商软件窗口宽度需保证「双向委托」页买卖两组件完整在屏（一次性
   手动调整）；`/fast/*` HTTP 端点 CLI 不暴露（同准则 8），排错见 references/api.md
 
@@ -122,6 +126,7 @@ uv run --no-project python <skill目录>/scripts/xiadan.py <命令>
 | `SESSION_DESKTOP_UNAVAILABLE` | 会话挂接但桌面僵死，任务**未执行**——网关自动升级自愈（tsdiscon，独立冷却 600s），稍后重试即可，无需查单 |
 | `BROKER_DISCONNECTED` | 查询时客户端报告券商断开，取到的会是缓存旧值、已作废——**直接重试即可**：断开在场时查询前置自动 F5 戳重连（30s 防抖，重连实测 ~0.9s），网络恢复后首个成功请求即新鲜数据（断网初期有 ~25-45s 盲期，无需查单） |
 | `DUPLICATE_ORDER` | 同键重复提交被拦截——查单确认是否已提交 |
+| `DATA_MISMATCH` | 极速 F8 行数与撤单按钮实时计数不一致——网格数据陈旧已作废，**勿重试同一查询**，直接 `orders_full` 全量复核 |
 | `PRICE_OUT_OF_RANGE` | 价格超涨跌停——向用户复核价格 |
 | `INSUFFICIENT_BALANCE` / `INSUFFICIENT_SHARES` | 资金/份额不足——报告用户 |
 | `T1_RESTRICTION` | 当日买入次日才可卖——报告用户 |

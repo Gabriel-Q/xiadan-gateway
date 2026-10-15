@@ -57,6 +57,10 @@ class FastTrader:
     # 3551 只显示可撤委托=勾选（F8 只看可撤）；3552 联动/3553 不清空=未勾
     _BOX_TARGETS = {3551: True, 3552: False, 3553: False}
     _CANCEL = {"A": 30001, "X": 30002, "C": 30003}
+    # 撤单按钮实时计数文本形态（2026-10-15 本地模拟账户实测）：
+    # 「全撤1(Z /)」「撤买1(X)」「撤卖(C)」——数量直接跟在按钮名后
+    # （无括号，括号内为快捷键），数量为 0 时数字省略
+    _CANCEL_COUNT_RE = re.compile(r"^(全撤|撤买|撤卖)(\d+)?")
     _GRID_CID = 1047                       # CVirtualGridCtrl（页内三标签共用）
     _NAV_NAME = "双向委托"
     _F_KEYS = {"positions": "{F6}", "trades": "{F7}", "orders": "{F8}"}
@@ -420,19 +424,83 @@ class FastTrader:
                     pass
             window.type_keys(self._F_KEYS[view], pause=0.05)
             # 同标签二次查询数据滞后实锤（2026-10-12：下单后新活单不在列）
-            # ——F5 强制拉新后再复制，0.4s 落定
+            # ——F5 强制拉新后再复制。F5 为页面级刷新（2026-10-15 用户实测：
+            # 无需网格焦点，整页含表单一起刷），0.5s 数据拉取落定窗口
+            # （对齐传统路径 position_service 实测标准）
             window.type_keys("{F5}", pause=0.05)
-            time.sleep(0.4)
+            time.sleep(0.5)
             with timed(f"极速页内查询[{names[view]}]", self.logger):
                 header, rows = self._copy_grid(window)
             # 表头签名断言（空数据列表也有表头——可撤委托为 0 是合法状态）
             if any(sig in k for k in header):
+                if view == "orders":
+                    self._verify_cancel_counts(rows)
                 return rows
             self.logger.warning(f"页内查询[{names[view]}]第 {attempt} 次串台"
                                 f"（表头无「{sig}」，rows={len(rows)}），重试")
         raise ApiError(ErrorCode.INTERNAL_ERROR,
                        f"页内查询[{names[view]}]连续串台（表头无「{sig}」）",
                        suggestion="重试一次；若持续串台请检查底部标签状态")
+
+    def _read_cancel_button_counts(self) -> dict:
+        """读三个撤单按钮上的实时可撤计数（客户端自维护，独立于复制管线）
+
+        返回 {"A": n|None, "X": ..., "C": ...}：按钮缺失或文本无法识别
+        （券商版本改名）为 None；按钮名后无数字 = 0（实测数量为零时
+        数字省略，如「撤卖(C)」）。三按钮在双向委托页常驻可见，不随
+        F6/F7/F8 子标签切换消失（2026-10-15 用户实测）。
+        """
+        counts = {}
+        for t, cid in self._CANCEL.items():
+            el = self._cache["fields"].get(cid)
+            try:
+                txt = (el.window_text() or "").strip() \
+                    if el is not None and self._alive(el) else ""
+            except Exception:
+                txt = ""
+            m = self._CANCEL_COUNT_RE.match(txt)
+            if m:
+                counts[t] = int(m.group(2)) if m.group(2) else 0
+            else:
+                counts[t] = None
+        return counts
+
+    def _verify_cancel_counts(self, rows: list) -> None:
+        """F8 可撤委托行数 vs 撤单按钮实时计数交叉校验（用户定版 2026-10-15）
+
+        按钮计数由客户端独立维护，网格复制到陈旧数据（下单/撤单后页面
+        未及时刷新）时两者必不一致——直接报 DATA_MISMATCH 由调用方走
+        全量查询（GET /orders/full）复核，不做自动重查（fail-fast）。
+        细分：网格「操作」列买/卖行数 vs 撤买(X)/撤卖(C) 按钮计数。
+        前提：3551「只显示可撤委托」勾选态（启动引导+懒引导保证），
+        F8 行数才等于可撤数。按钮计数不可读时降级跳过——锚点是增强
+        而非硬依赖，不能因按钮形态差异把所有查询变成硬故障。
+        """
+        counts = self._read_cancel_button_counts()
+        total = counts["A"]
+        if total is None:
+            self.logger.warning("撤单按钮计数不可读，跳过 F8 交叉校验")
+            return
+        grid_buy = sum(1 for r in rows
+                       if (r.get("操作") or "").strip() == "买入")
+        grid_sell = sum(1 for r in rows
+                        if (r.get("操作") or "").strip() == "卖出")
+        detail = (f"按钮计数 全撤={total} 撤买={counts['X']} "
+                  f"撤卖={counts['C']}；网格 {len(rows)} 行"
+                  f"（买 {grid_buy}/卖 {grid_sell}）")
+        mismatch = (
+            total != len(rows)
+            or (counts["X"] is not None and counts["X"] != grid_buy)
+            or (counts["C"] is not None and counts["C"] != grid_sell)
+        )
+        if mismatch:
+            self.logger.warning(f"F8 数据新鲜度校验不一致：{detail}")
+            raise ApiError(
+                ErrorCode.DATA_MISMATCH,
+                f"可撤委托查询结果与客户端实时计数不一致（{detail}）"
+                "——网格数据可能陈旧（下单/撤单后页面刷新滞后）",
+                suggestion="请用 GET /orders/full 全量复核当日委托后再操作")
+        self.logger.info(f"F8 交叉校验一致：{detail}")
 
     def query_balance(self) -> dict:
         """资金余额：导航树点「资金股票」→ cid 批量读取（无验证码）→ 回主页"""
@@ -464,10 +532,19 @@ class FastTrader:
         return result
 
     def query_full_orders(self) -> list:
-        """F4 当日委托页全量委托（含已撤）——全量委托唯一查询口（用户定版）"""
+        """F4 当日委托页全量委托（含已撤）——全量委托唯一查询口（用户定版）
+
+        复制前 F5 页面级强制拉新：导航点击时刻的加载快照可能缺最新委托
+        （下单后立即复核必踩）——本方法是落账复核主路径，不能交旧数据
+        （2026-10-15 定版）。0.5s 落定窗口与 query_tab 一致。
+        """
         self._ensure_home()
         self._click_nav_item("当日委托")
         time.sleep(0.25)
+        window = self._window()
+        window.set_focus()
+        window.type_keys("{F5}", pause=0.05)
+        time.sleep(0.5)
         _, rows = self._copy_grid(self._window())
         self._back_home()
         return rows

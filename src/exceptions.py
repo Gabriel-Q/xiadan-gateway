@@ -39,6 +39,10 @@ class ErrorCode:
     # F5 恢复立竿见影；见 services/broker_link poke_if_disconnected）
     BROKER_DISCONNECTED = "BROKER_DISCONNECTED"
     OCR_FAILED = "OCR_FAILED"                       # 验证码识别失败
+    # 查询数据与客户端实时状态不一致（F8 可撤委托行数≠撤单按钮实时计数
+    # ——网格复制到陈旧数据）。本次结果已作废，改用全量查询复核
+    # （GET /orders/full），不要直接重试同一查询
+    DATA_MISMATCH = "DATA_MISMATCH"
     INPUT_VERIFY_FAILED = "INPUT_VERIFY_FAILED"     # 证券名称联动校验失败（代码未被客户端接受）
     INTERNAL_ERROR = "INTERNAL_ERROR"               # 未知异常
 
@@ -82,6 +86,7 @@ HTTP_STATUS = {
     ErrorCode.SERVER_UNAVAILABLE: 503,
     ErrorCode.BROKER_DISCONNECTED: 503,
     ErrorCode.OCR_FAILED: 500,
+    ErrorCode.DATA_MISMATCH: 500,
     ErrorCode.INPUT_VERIFY_FAILED: 500,
     ErrorCode.INTERNAL_ERROR: 500,
     ErrorCode.QUEUE_TIMEOUT: 503,

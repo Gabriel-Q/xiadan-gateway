@@ -5,6 +5,12 @@ CLI 子命令与 HTTP 端点一一对应；本文供需要理解响应字段全�
 失败（`error` + `error_code`/`message`/`suggestion`/`request_id`）。CLI 已自动
 解包 `data`、格式化错误。
 
+成功响应在 `data` 之外还固定带 `request_id`/`timestamp`；业务端点成功路径
+另带 `duration_ms`——网关侧请求处理总耗时（毫秒、一位小数），覆盖排队
+等待 + 任务执行全程；`/health` 与失败响应无此字段。客户端 RTT ≈
+`duration_ms` + 网络往返：极速下单实测服务端 p50 ~2.2s、12 笔标准差仅
+~12ms（UIA 页流确定性强），RTT 抖动主要来自网络。
+
 ## 端点总表
 
 | CLI 命令 | HTTP | 路径 | 参考耗时 |
